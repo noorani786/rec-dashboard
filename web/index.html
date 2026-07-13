@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>REC Reporting Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header>
+  <div class="hrow">
+    <div class="grow">
+      <h1>Religious Education Centre — Reporting Dashboard</h1>
+      <div class="sub">ITREB · Access, Registration, Attendance &amp; Missing-Attendance</div>
+      <div class="status" id="status">Loading data…</div>
+    </div>
+    <div class="dataset">
+      <div class="dsel"><label>Region</label><select id="fRegion"></select></div>
+      <div class="dsel"><label>Year</label><select id="fYear"></select></div>
+      <button class="refresh" id="refresh">↻ Refresh</button>
+    </div>
+  </div>
+</header>
+
+<div class="banner" id="banner" style="display:none"></div>
+
+<div class="tabs" id="tabs">
+  <div class="tab active" data-p="overview">Overview</div>
+  <div class="tab" data-p="access">Access Summary</div>
+  <div class="tab" data-p="registration">Registration Summary</div>
+  <div class="tab" data-p="attendance">Attendance Summary</div>
+  <div class="tab" data-p="missing">Attendance Entry &amp; Missing</div>
+</div>
+
+<div class="filters">
+  <div><label>Location</label><select id="fLoc"></select></div>
+  <div><label>Grade</label><select id="fGrade"></select></div>
+  <button class="reset" id="reset">Reset filters</button>
+</div>
+
+<main>
+  <!-- OVERVIEW -->
+  <section class="page active" id="p-overview">
+    <div class="cards" id="ovCards"></div>
+    <div class="grid2">
+      <div class="panel"><h3>Registered students by location</h3><div class="chartbox tall"><canvas id="ovRegLoc"></canvas></div></div>
+      <div class="panel"><h3>Attendance breakdown</h3><div class="chartbox tall"><canvas id="ovAtt"></canvas></div></div>
+    </div>
+    <div class="panel"><h3>Location scorecard</h3>
+      <div class="tablewrap"><table id="ovTable"></table></div>
+      <div class="note">Present % = Present ÷ (Present + Absent + Tardy + Excused). Missing sessions = date/class combos with no attendance entered (see the “Attendance Entry &amp; Missing” tab). Access = average recorded access hours per person.</div>
+    </div>
+  </section>
+
+  <!-- ACCESS -->
+  <section class="page" id="p-access">
+    <div class="cards" id="acCards"></div>
+    <div class="grid2">
+      <div class="panel"><h3>Access quality distribution</h3><div class="chartbox"><canvas id="acQ"></canvas></div>
+        <div class="legend">
+          <span><i class="dot" style="background:var(--green)"></i>Adequate</span>
+          <span><i class="dot" style="background:var(--teal)"></i>Moderate</span>
+          <span><i class="dot" style="background:var(--amber)"></i>Low</span>
+          <span><i class="dot" style="background:var(--red)"></i>None</span>
+        </div>
+      </div>
+      <div class="panel"><h3>Average access hours by location</h3><div class="chartbox"><canvas id="acLoc"></canvas></div></div>
+    </div>
+    <div class="panel"><h3>Access detail by person</h3>
+      <div class="tablewrap"><table id="acTable"></table></div>
+    </div>
+  </section>
+
+  <!-- REGISTRATION -->
+  <section class="page" id="p-registration">
+    <div class="cards" id="rgCards"></div>
+    <div class="grid2">
+      <div class="panel"><h3>Active students by grade category</h3><div class="chartbox"><canvas id="rgCat"></canvas></div></div>
+      <div class="panel"><h3>Active vs inactive by location</h3><div class="chartbox"><canvas id="rgLoc"></canvas></div></div>
+    </div>
+    <div class="panel"><h3>Registration by class (location · grade · section)</h3>
+      <div class="tablewrap"><table id="rgTable"></table></div>
+    </div>
+  </section>
+
+  <!-- ATTENDANCE -->
+  <section class="page" id="p-attendance">
+    <div class="cards" id="atCards"></div>
+    <div class="grid2">
+      <div class="panel"><h3>Present % trend over term</h3><div class="chartbox"><canvas id="atTrend"></canvas></div></div>
+      <div class="panel"><h3>Present % by grade</h3><div class="chartbox"><canvas id="atGrade"></canvas></div></div>
+    </div>
+    <div class="panel"><h3>Attendance by location</h3>
+      <div class="tablewrap"><table id="atTable"></table></div>
+      <div class="note">P = Present · A = Absent · T = Tardy · E = Excused · Unmarked = students on the roster left unmarked within an entered session. Present % excludes unmarked from the denominator. Sessions never entered at all are tracked separately on the “Attendance Entry &amp; Missing” tab.</div>
+    </div>
+  </section>
+
+  <!-- MISSING -->
+  <section class="page" id="p-missing">
+    <div class="cards" id="msCards"></div>
+    <div class="panel">
+      <h3>Attendance entry matrix — grades × dates</h3>
+      <div class="mxlegend">
+        <span><i class="mxdot mx-miss"></i>No attendance entered</span>
+        <span><i class="mxdot mx-ok"></i>Entered</span>
+        <span><i class="mxdot mx-hol"></i>Scheduled holiday (excluded)</span>
+        <span><i class="mxdot mx-off"></i>Not in session / outside class window</span>
+      </div>
+      <div class="mxwrap" id="msMatrix"></div>
+      <div class="note">Each row is a class (location · grade · section); each column is a Saturday. A <b>red dot</b> marks a date the class was expected to meet but no attendance was entered. Tip: use the Location filter above to focus on one center.</div>
+    </div>
+    <div class="grid2">
+      <div class="panel"><h3>Missing sessions by location</h3><div class="chartbox"><canvas id="msLoc"></canvas></div></div>
+      <div class="panel"><h3>Most-affected classes</h3>
+        <div class="tablewrap" style="max-height:300px"><table id="msGap"></table></div>
+      </div>
+    </div>
+    <div class="panel"><h3>Missing attendance sessions (date · class with no entry)</h3>
+      <div class="tablewrap"><table id="msTable"></table></div>
+      <div class="note">A session is flagged only when <b>no attendance was entered</b> for that class on a date it was expected to meet. Expected dates use each class's own weekly cadence within its active window, are counted only when the location was in session that day, and <b>exclude the scheduled holidays</b> from holidays.csv. Partial sessions where some students were left unmarked are <b>not</b> counted here.</div>
+    </div>
+  </section>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,84 @@
+:root{
+  --bg:#0f1117; --panel:#171a23; --panel2:#1e222d; --line:#2a2f3d;
+  --txt:#e6e8ee; --muted:#9aa2b1; --accent:#4f8cff; --accent2:#7c5cff;
+  --green:#35c28e; --amber:#f5b74e; --red:#ef5a6f; --teal:#3fb8c4;
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--txt);font-size:14px}
+header{padding:18px 24px 12px;border-bottom:1px solid var(--line);background:linear-gradient(180deg,#141824,#0f1117)}
+.hrow{display:flex;align-items:flex-start;gap:16px}
+.hrow .grow{flex:1}
+h1{margin:0;font-size:19px;font-weight:650;letter-spacing:.2px}
+.sub{color:var(--muted);font-size:12.5px;margin-top:3px}
+.status{color:var(--muted);font-size:11.5px;margin-top:7px;line-height:1.5}
+.status b{color:var(--txt);font-weight:600}
+.dataset{display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap}
+.dsel{display:flex;flex-direction:column;gap:4px}
+.dsel label{color:var(--muted);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.3px}
+.dsel select{min-width:130px}
+.refresh{background:var(--accent);border:none;color:#fff;padding:8px 14px;border-radius:8px;cursor:pointer;font-weight:600;font-size:13px;white-space:nowrap}
+.refresh:hover{filter:brightness(1.08)}
+.refresh:disabled{opacity:.6;cursor:default}
+.banner{margin:14px 24px 0;padding:12px 16px;border-radius:10px;border:1px solid var(--amber);background:rgba(245,183,78,.1);color:var(--amber);font-size:13px}
+.banner.err{border-color:var(--red);background:rgba(239,90,111,.1);color:var(--red)}
+.tabs{display:flex;gap:4px;padding:10px 24px 0;flex-wrap:wrap}
+.tab{padding:9px 16px;border-radius:8px 8px 0 0;cursor:pointer;color:var(--muted);font-weight:550;border:1px solid transparent;border-bottom:none}
+.tab.active{background:var(--panel);color:var(--txt);border-color:var(--line)}
+.filters{display:flex;gap:12px;align-items:center;padding:12px 24px;background:var(--panel);border-bottom:1px solid var(--line);flex-wrap:wrap}
+.filters label{color:var(--muted);font-size:12px;margin-right:5px}
+select{background:var(--panel2);color:var(--txt);border:1px solid var(--line);border-radius:7px;padding:7px 10px;font-size:13px;min-width:150px}
+.reset{margin-left:auto;background:var(--panel2);border:1px solid var(--line);color:var(--muted);padding:7px 12px;border-radius:7px;cursor:pointer}
+.reset:hover{color:var(--txt)}
+main{padding:20px 24px 60px}
+.page{display:none} .page.active{display:block}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:14px;margin-bottom:20px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+.card .k{color:var(--muted);font-size:12px;font-weight:550;text-transform:uppercase;letter-spacing:.4px}
+.card .v{font-size:27px;font-weight:680;margin-top:6px}
+.card .d{font-size:12px;color:var(--muted);margin-top:4px}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-bottom:20px}
+.grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:18px;margin-bottom:20px}
+@media(max-width:900px){.grid2,.grid3{grid-template-columns:1fr}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+.panel h3{margin:0 0 14px;font-size:14px;font-weight:600}
+.chartbox{position:relative;height:280px}
+.chartbox.tall{height:340px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+th{color:var(--muted);font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.3px;cursor:pointer;user-select:none;position:sticky;top:0;background:var(--panel)}
+th:hover{color:var(--txt)}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+tbody tr:hover{background:var(--panel2)}
+.tablewrap{max-height:460px;overflow:auto;border:1px solid var(--line);border-radius:10px}
+.pill{display:inline-block;padding:2px 9px;border-radius:20px;font-size:11.5px;font-weight:600}
+.p-green{background:rgba(53,194,142,.16);color:var(--green)}
+.p-amber{background:rgba(245,183,78,.16);color:var(--amber)}
+.p-red{background:rgba(239,90,111,.16);color:var(--red)}
+.p-grey{background:rgba(154,162,177,.16);color:var(--muted)}
+.bar{height:7px;border-radius:4px;background:var(--panel2);overflow:hidden;min-width:60px}
+.bar>span{display:block;height:100%}
+.note{color:var(--muted);font-size:12px;margin-top:8px;line-height:1.5}
+.legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:10px;font-size:12px;color:var(--muted)}
+.dot{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:middle}
+/* attendance entry matrix */
+.mxlegend{display:flex;gap:18px;flex-wrap:wrap;margin-bottom:12px;font-size:12px;color:var(--muted)}
+.mxlegend span{display:flex;align-items:center;gap:6px}
+.mxdot{display:inline-block;width:10px;height:10px;border-radius:50%}
+.mx-miss{background:var(--red);box-shadow:0 0 0 2px rgba(239,90,111,.25)}
+.mx-ok{background:#3a4152}
+.mx-hol{background:transparent;border:1px solid var(--amber)}
+.mx-off{background:transparent;border:1px solid var(--line)}
+.mxwrap{overflow:auto;max-height:520px;border:1px solid var(--line);border-radius:10px}
+table.mx{border-collapse:separate;border-spacing:0;font-size:11px}
+table.mx th.rowlbl,table.mx td.rowlbl{position:sticky;left:0;z-index:3;background:var(--panel);text-align:left;white-space:nowrap;padding:4px 10px;border-bottom:1px solid var(--line);border-right:1px solid var(--line);font-weight:550;color:var(--txt);min-width:190px}
+table.mx thead th{position:sticky;top:0;z-index:2;background:var(--panel);color:var(--muted);font-weight:600;padding:6px 3px;border-bottom:1px solid var(--line);white-space:nowrap}
+table.mx thead th.corner{z-index:4;left:0}
+table.mx thead th.mon{color:var(--txt);border-left:1px solid var(--line)}
+table.mx td.cell{width:16px;min-width:16px;height:22px;text-align:center;border-bottom:1px solid rgba(42,47,61,.5)}
+table.mx td.cell.mon{border-left:1px solid var(--line)}
+table.mx tbody tr:hover td{background:var(--panel2)}
+table.mx tbody tr:hover td.rowlbl{background:var(--panel2)}
+.cd{display:inline-block;width:9px;height:9px;border-radius:50%}
+.cd.miss{background:var(--red)}
+.cd.ok{background:#3a4152}
+.cd.hol{background:transparent;border:1px solid var(--amber);width:7px;height:7px}

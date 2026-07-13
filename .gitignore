@@ -1,0 +1,11 @@
+# Student data exports contain PII — never commit them (any region/year folder)
+data/**/*.csv
+data/**/*.tsv
+!data/.gitkeep
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
