@@ -21,6 +21,23 @@ rebuild automatically — no build step, no renaming files.
 4. Your browser opens `http://localhost:8000`. Use the **Region** and **Year**
    pickers at the top right to switch datasets.
 
+### Password protection (local)
+
+```bash
+export DASHBOARD_USER=rec
+export DASHBOARD_PASSWORD='rec-access-dashboard-2026786'
+python3 serve.py
+```
+
+The browser will prompt for username/password. Leave `DASHBOARD_PASSWORD` unset
+for an open local session.
+
+### Publish on a VPS (nginx + HTTPS + password)
+
+To share a URL with others behind a password, deploy on a VPS with nginx Basic
+Auth and Let's Encrypt. Step-by-step instructions are in
+[`deploy/README.md`](deploy/README.md).
+
 To update later, add or replace exports under `data/<region>/<year>/` and click
 **↻ Refresh** (or reload the page). The server re-reads the whole `data/` tree on
 every request.
@@ -107,6 +124,7 @@ rec-dashboard/
 │   ├── index.html    # dashboard markup
 │   ├── styles.css    # styling
 │   └── app.js        # reports + charts (fetches /api/data)
+├── deploy/           # VPS: nginx + systemd + setup notes
 └── README.md
 ```
 
@@ -122,5 +140,8 @@ rec-dashboard/
 - Charts load Chart.js from a CDN, so the page needs internet access the first
   time (or cache it if you need fully offline use).
 - Run on a different port with `python3 serve.py 9000`.
+- Set `DASHBOARD_PASSWORD` to enable HTTP Basic Auth; set `DASHBOARD_BIND` if
+  you need a non-localhost bind (prefer `127.0.0.1` behind nginx).
 - **Privacy:** the exports contain student personal information. `data/*.csv` is
-  git-ignored so real data is never committed. Keep the folder local.
+  git-ignored so real data is never committed. Keep the folder private on any
+  server you deploy to.

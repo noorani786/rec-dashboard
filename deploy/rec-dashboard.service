@@ -1,0 +1,26 @@
+[Unit]
+Description=REC Reporting Dashboard
+After=network.target
+
+[Service]
+Type=simple
+# Change User/Group to the account that owns /opt/rec-dashboard
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/rec-dashboard
+# App stays on localhost; nginx is the public entry + password gate.
+Environment=DASHBOARD_BIND=127.0.0.1
+Environment=DASHBOARD_NO_BROWSER=1
+# Optional second gate (usually leave unset when nginx auth_basic is on):
+# Environment=DASHBOARD_USER=rec
+# Environment=DASHBOARD_PASSWORD=change-me
+ExecStart=/usr/bin/python3 /opt/rec-dashboard/serve.py 8000
+Restart=on-failure
+RestartSec=3
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

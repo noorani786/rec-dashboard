@@ -14,9 +14,21 @@ the whole data/ tree - no build step, no renaming.
     python3 serve.py            # starts on http://localhost:8000
     python3 serve.py 9000       # custom port
 
+Auth (optional for local; recommended when exposed):
+
+    export DASHBOARD_USER=rec
+    export DASHBOARD_PASSWORD='your-strong-password'
+    python3 serve.py
+
+For a public VPS deploy, bind to localhost and put nginx in front
+(see deploy/README.md):
+
+    export DASHBOARD_BIND=127.0.0.1
+    export DASHBOARD_PASSWORD='...'   # optional extra gate behind nginx
+
 Requires only the Python 3 standard library.
 """
-import csv, datetime, io, json, os, sys, webbrowser
+import base64, csv, datetime, io, json, os, secrets, sys, webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -25,6 +37,12 @@ DATA_DIR = os.path.join(ROOT, "data")
 WEB_DIR = os.path.join(ROOT, "web")
 
 QLEVELS = {"Adequate", "Moderate", "Low", "None"}
+
+# Auth: when DASHBOARD_PASSWORD is set, every request requires HTTP Basic Auth.
+AUTH_USER = os.environ.get("DASHBOARD_USER", "rec").strip() or "rec"
+AUTH_PASSWORD = os.environ.get("DASHBOARD_PASSWORD", "")
+# Bind address: 127.0.0.1 for local / behind nginx; 0.0.0.0 only if you know the risk.
+BIND_HOST = os.environ.get("DASHBOARD_BIND", "127.0.0.1").strip() or "127.0.0.1"
 
 # Test / non-reporting centers omitted from all aggregates.
 def _excluded_loc(name):
@@ -391,22 +409,53 @@ CONTENT_TYPES = {
     ".css": "text/css; charset=utf-8",
     ".json": "application/json; charset=utf-8",
     ".svg": "image/svg+xml",
+    ".png": "image/png",
 }
 
 
 class Handler(BaseHTTPRequestHandler):
-    def _send(self, code, body, ctype):
+    def _send(self, code, body, ctype, extra_headers=None):
         if isinstance(body, str):
             body = body.encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        if extra_headers:
+            for k, v in extra_headers.items():
+                self.send_header(k, v)
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
 
+    def _unauthorized(self):
+        self._send(
+            401,
+            "Authentication required",
+            "text/plain; charset=utf-8",
+            {"WWW-Authenticate": 'Basic realm="REC Dashboard", charset="UTF-8"'},
+        )
+
+    def _authorized(self):
+        """True when auth is disabled or credentials match."""
+        if not AUTH_PASSWORD:
+            return True
+        header = self.headers.get("Authorization", "")
+        if not header.startswith("Basic "):
+            return False
+        try:
+            raw = base64.b64decode(header[6:].strip()).decode("utf-8")
+            user, _, password = raw.partition(":")
+        except Exception:
+            return False
+        ok_user = secrets.compare_digest(user, AUTH_USER)
+        ok_pass = secrets.compare_digest(password, AUTH_PASSWORD)
+        return ok_user and ok_pass
+
     def do_GET(self):
+        if not self._authorized():
+            self._unauthorized()
+            return
         parsed = urlparse(self.path)
         path = parsed.path
         if path == "/api/catalog":
@@ -447,7 +496,7 @@ def main():
     httpd = None
     for p in range(port, port + 20):
         try:
-            httpd = ThreadingHTTPServer(("127.0.0.1", p), Handler)
+            httpd = ThreadingHTTPServer((BIND_HOST, p), Handler)
             port = p
             break
         except OSError:
@@ -456,7 +505,8 @@ def main():
         print("Could not bind to a port. Try: python3 serve.py <port>")
         sys.exit(1)
 
-    url = f"http://localhost:{port}/"
+    display_host = "localhost" if BIND_HOST in ("127.0.0.1", "::1") else BIND_HOST
+    url = f"http://{display_host}:{port}/"
     cat = catalog_json(scan_catalog())
     print("REC Reporting Dashboard")
     print("=" * 44)
@@ -469,12 +519,17 @@ def main():
         print("No datasets found yet. Organise exports as:")
         print(f"  {os.path.join(DATA_DIR, '<region>', '<year>')}/*.csv")
         print(f"  e.g. {os.path.join(DATA_DIR, 'central', '2025-2026')}/")
-    print(f"\nServing at {url}")
+    print(f"\nServing at {url} (bind {BIND_HOST}:{port})")
+    if AUTH_PASSWORD:
+        print(f"HTTP Basic Auth enabled (user: {AUTH_USER})")
+    else:
+        print("HTTP Basic Auth OFF — set DASHBOARD_PASSWORD to require a password.")
     print("Add/replace CSVs under data/<region>/<year>/ and refresh to update. Ctrl+C to stop.")
-    try:
-        webbrowser.open(url)
-    except Exception:
-        pass
+    if BIND_HOST in ("127.0.0.1", "localhost", "::1") and not os.environ.get("DASHBOARD_NO_BROWSER"):
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

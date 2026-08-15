@@ -3,6 +3,11 @@ data/**/*.csv
 data/**/*.tsv
 !data/.gitkeep
 
+# Secrets / deploy credentials
+.env
+*.htpasswd
+.htpasswd*
+
 # Python
 __pycache__/
 *.pyc
