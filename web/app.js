@@ -27,7 +27,7 @@ let C = themeColors();
 Chart.defaults.color = C.muted; Chart.defaults.borderColor = C.line; Chart.defaults.font.family='inherit';
 
 const THEME_KEY='recDashboardTheme';
-function currentTheme(){ return document.documentElement.getAttribute('data-theme')||'dark'; }
+function currentTheme(){ return document.documentElement.getAttribute('data-theme')==='light'?'light':'dark'; }
 function applyTheme(theme){
   if(theme==='light') document.documentElement.setAttribute('data-theme','light');
   else document.documentElement.removeAttribute('data-theme');
@@ -38,9 +38,9 @@ function applyTheme(theme){
   if(btn) btn.textContent=theme==='light'?'☾ Dark':'☀ Light';
 }
 (function initTheme(){
-  let t='dark';
-  try{ t=localStorage.getItem(THEME_KEY)||'dark'; }catch(_){}
-  applyTheme(t);
+  let t='light';
+  try{ t=localStorage.getItem(THEME_KEY)||'light'; }catch(_){}
+  applyTheme(t==='dark'?'dark':'light');
 })();
 document.getElementById('themeToggle').onclick=()=>{
   applyTheme(currentTheme()==='light'?'dark':'light');

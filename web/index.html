@@ -1,11 +1,11 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>REC Reporting Dashboard</title>
 <script>
-(function(){try{if(localStorage.getItem('recDashboardTheme')==='light')document.documentElement.setAttribute('data-theme','light');}catch(e){}})();
+(function(){try{var t=localStorage.getItem('recDashboardTheme');if(t==='dark')document.documentElement.removeAttribute('data-theme');else document.documentElement.setAttribute('data-theme','light');}catch(e){document.documentElement.setAttribute('data-theme','light');}})();
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <link rel="stylesheet" href="styles.css">
@@ -27,7 +27,7 @@
     <div class="dataset">
       <div class="dsel"><label>Region</label><select id="fRegion"></select></div>
       <div class="dsel"><label>Year</label><select id="fYear"></select></div>
-      <button class="theme-toggle" id="themeToggle" type="button" title="Toggle light / dark theme">☀ Light</button>
+      <button class="theme-toggle" id="themeToggle" type="button" title="Toggle light / dark theme">☾ Dark</button>
       <button class="refresh" id="refresh">↻ Refresh</button>
     </div>
   </div>
