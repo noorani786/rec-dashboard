@@ -3,51 +3,282 @@
 // folder on every request. Refreshing the page (or the Refresh button) rebuilds
 // every report from whatever CSVs are currently in data/.
 
-const C = {green:'#35c28e',amber:'#f5b74e',red:'#ef5a6f',teal:'#3fb8c4',accent:'#4f8cff',accent2:'#7c5cff',muted:'#9aa2b1',line:'#2a2f3d'};
+function cssVar(name, fallback){
+  const v=getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return v||fallback;
+}
+function themeColors(){
+  return {
+    green:cssVar('--green','#35c28e'),
+    amber:cssVar('--amber','#f5b74e'),
+    red:cssVar('--red','#ef5a6f'),
+    teal:cssVar('--teal','#3fb8c4'),
+    accent:cssVar('--accent','#4f8cff'),
+    accent2:cssVar('--accent2','#7c5cff'),
+    muted:cssVar('--muted','#9aa2b1'),
+    line:cssVar('--line','#2a2f3d'),
+    txt:cssVar('--txt','#e6e8ee'),
+    chartLabel:cssVar('--chart-label','#c5cbd6'),
+    chartLabelOn:cssVar('--chart-label-on','rgba(255,255,255,.92)'),
+    chartFill:cssVar('--chart-fill','rgba(53,194,142,.12)'),
+  };
+}
+let C = themeColors();
 Chart.defaults.color = C.muted; Chart.defaults.borderColor = C.line; Chart.defaults.font.family='inherit';
 
+const THEME_KEY='recDashboardTheme';
+function currentTheme(){ return document.documentElement.getAttribute('data-theme')||'dark'; }
+function applyTheme(theme){
+  if(theme==='light') document.documentElement.setAttribute('data-theme','light');
+  else document.documentElement.removeAttribute('data-theme');
+  try{ localStorage.setItem(THEME_KEY, theme==='light'?'light':'dark'); }catch(_){}
+  C=themeColors();
+  Chart.defaults.color=C.muted; Chart.defaults.borderColor=C.line;
+  const btn=document.getElementById('themeToggle');
+  if(btn) btn.textContent=theme==='light'?'☾ Dark':'☀ Light';
+}
+(function initTheme(){
+  let t='dark';
+  try{ t=localStorage.getItem(THEME_KEY)||'dark'; }catch(_){}
+  applyTheme(t);
+})();
+document.getElementById('themeToggle').onclick=()=>{
+  applyTheme(currentTheme()==='light'?'dark':'light');
+  if(typeof render==='function') render();
+};
+
 const charts = {};
-function mk(id,cfg){ if(charts[id])charts[id].destroy(); charts[id]=new Chart(document.getElementById(id),cfg); }
+// Draw values on bars, stacked segments, doughnut slices, and line points.
+const valueLabels={
+  id:'valueLabels',
+  afterDatasetsDraw(chart){
+    const cfg=chart.options.plugins&&chart.options.plugins.valueLabels;
+    if(cfg===false) return;
+    const format=(typeof cfg==='object'&&typeof cfg.format==='function')
+      ? cfg.format
+      : (v=> (typeof v==='number' && !Number.isInteger(v) ? String(v) : fmt(v)));
+    const {ctx}=chart; ctx.save();
+    const type=chart.config.type;
+    const horiz=chart.options.indexAxis==='y';
+    const stacked=!!(chart.options.scales&&((chart.options.scales.x&&chart.options.scales.x.stacked)||(chart.options.scales.y&&chart.options.scales.y.stacked)));
+    chart.data.datasets.forEach((ds,di)=>{
+      const meta=chart.getDatasetMeta(di); if(meta.hidden) return;
+      meta.data.forEach((el,i)=>{
+        const v=ds.data[i]; if(v==null||v===''||v===0) return;
+        const label=format(v);
+        ctx.shadowColor='transparent'; ctx.shadowBlur=0;
+        if(type==='doughnut'||type==='pie'){
+          const pos=el.tooltipPosition();
+          ctx.font='600 11px system-ui,sans-serif';
+          ctx.textAlign='center'; ctx.textBaseline='middle';
+          ctx.fillStyle=C.chartLabelOn;
+          ctx.shadowColor='rgba(0,0,0,.25)'; ctx.shadowBlur=2;
+          ctx.fillText(label, pos.x, pos.y);
+          return;
+        }
+        if(type==='line'){
+          const n=ds.data.length;
+          if(n>24 && i%Math.ceil(n/16)) return; // thin out dense trends
+          const pos=el.tooltipPosition();
+          ctx.font='600 10px system-ui,sans-serif';
+          ctx.textAlign='center'; ctx.textBaseline='bottom';
+          ctx.fillStyle=C.chartLabel;
+          ctx.fillText(label, pos.x, pos.y-6);
+          return;
+        }
+        // bar
+        ctx.font='600 11px system-ui,sans-serif';
+        if(stacked){
+          ctx.fillStyle=C.chartLabelOn;
+          ctx.shadowColor='rgba(0,0,0,.22)'; ctx.shadowBlur=2;
+          if(horiz){
+            const mid=(el.base+el.x)/2;
+            if(Math.abs(el.x-el.base)<22) return;
+            ctx.textAlign='center'; ctx.textBaseline='middle';
+            ctx.fillText(label, mid, el.y);
+          } else {
+            const mid=(el.base+el.y)/2;
+            if(Math.abs(el.y-el.base)<14) return;
+            ctx.textAlign='center'; ctx.textBaseline='middle';
+            ctx.fillText(label, el.x, mid);
+          }
+        } else if(horiz){
+          const pos=el.tooltipPosition();
+          ctx.fillStyle=C.chartLabel;
+          ctx.textAlign='left'; ctx.textBaseline='middle';
+          ctx.fillText(label, pos.x+6, pos.y);
+        } else {
+          const pos=el.tooltipPosition();
+          ctx.fillStyle=C.chartLabel;
+          ctx.textAlign='center'; ctx.textBaseline='bottom';
+          ctx.fillText(label, pos.x, pos.y-6);
+        }
+      });
+    });
+    ctx.restore();
+  }
+};
+function mk(id,cfg){
+  if(charts[id])charts[id].destroy();
+  const type=cfg.type;
+  const horiz=cfg.options&&cfg.options.indexAxis==='y';
+  const opts=cfg.options||(cfg.options={});
+  opts.layout=opts.layout||{};
+  opts.layout.padding=Object.assign(
+    type==='bar'&&!horiz?{top:18}:{},
+    type==='bar'&&horiz?{right:40}:{},
+    type==='line'?{top:16}:{},
+    opts.layout.padding||{}
+  );
+  opts.plugins=opts.plugins||{};
+  if(opts.plugins.valueLabels===undefined) opts.plugins.valueLabels=true;
+  const plugins=[...(cfg.plugins||[]), valueLabels];
+  charts[id]=new Chart(document.getElementById(id), Object.assign({}, cfg, {plugins}));
+}
 const fmt = n => (n||0).toLocaleString();
 const pct = (a,b)=> b?Math.round(1000*a/b)/10:0;
 const uniq = (arr)=>[...new Set(arr)].sort();
+const pctLabel = v => v+'%';
 const gradeOrder=['PK','KG','01','02','03','04','05','06','07','08','09','10','11','12','Optional'];
+const catOrder=['Pre-Primary','Primary','STEP (7-10)','STEP (11-12)'];
+const GRADE_LEVELS=[
+  {id:'Pre-Primary', grades:['PK','KG']},
+  {id:'Primary', grades:['01','02','03','04','05','06']},
+  {id:'STEP (7-10)', grades:['07','08','09','10']},
+  {id:'STEP (11-12)', grades:['11','12']},
+];
+const gradeToLevel=Object.fromEntries(GRADE_LEVELS.flatMap(l=>l.grades.map(g=>[g,l.id])));
 const MONTHS=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const DAYS=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+// Hardcoded gate for the Access detail-by-person table (personal info).
+const ACCESS_DETAIL_PASSWORD='rec-access';
+const ACCESS_DETAIL_KEY='recAccessDetailUnlocked';
+
+function gradeLevelOf(g){ return gradeToLevel[g]||null; }
+// Map CSV categories / grades onto Pre-Primary, Primary, STEP (7-10), STEP (11-12).
+function displayCat(r){
+  return gradeLevelOf(r.grade) || (r.cat==='Secondary' ? 'STEP (7-10)' : (r.cat||''));
+}
+function sortCats(a,b){
+  const ia=catOrder.indexOf(a), ib=catOrder.indexOf(b);
+  return (ia<0?99:ia)-(ib<0?99:ib) || String(a).localeCompare(String(b));
+}
 
 // ---- module state, (re)assigned on every data load ----
-let DATA={access:[],registration:[],attendance:[],holidays:[]};
+let DATA={access:[],registration:[],attendance:[],holidays:[],duplicates:{available:false,students:0,extraEnrollments:0,uniqueStudents:0,details:[]}};
+let DATA_PREV=null; // prior-year dataset for the same region, or null
 let HOLIDAYS=new Set(), MISSING=[];
-const state={loc:'ALL', grade:'ALL'};
+let MISSING_PREV=[];
+let PREV_YEAR=null;
+let ALL_GRADES=[];
+const state={loc:'ALL', level:'ALL', grade:'ALL', matrix:null};
 
-const fLoc=document.getElementById('fLoc'), fGrade=document.getElementById('fGrade');
+const fLoc=document.getElementById('fLoc'), fLevel=document.getElementById('fLevel'), fGrade=document.getElementById('fGrade');
 
-function fLocOk(l){return state.loc==='ALL'||l===state.loc;}
-function fGrOk(g){return state.grade==='ALL'||g===state.grade;}
+function isExcludedLoc(l){
+  const n=String(l||'').trim().toLowerCase();
+  return n.includes('ntx virtual');
+}
+function fLocOk(l){return !isExcludedLoc(l)&&(state.loc==='ALL'||l===state.loc);}
+function fLevelOk(g){return state.level==='ALL'||gradeLevelOf(g)===state.level;}
+function fGrOk(g){return fLevelOk(g)&&(state.grade==='ALL'||g===state.grade);}
+function scrubData(d){
+  if(!d) return d;
+  const drop=r=>r&&!isExcludedLoc(r.loc);
+  return {
+    ...d,
+    access:(d.access||[]).filter(drop),
+    registration:(d.registration||[]).filter(drop),
+    attendance:(d.attendance||[]).filter(drop),
+    holidays:(d.holidays||[]).filter(h=>!isExcludedLoc(String(h).split('|')[0])),
+    duplicates:(()=>{
+      const dup=d.duplicates||{available:false,details:[]};
+      if(!dup.available) return dup;
+      const details=(dup.details||[]).filter(x=>!(x.locs||[]).some(isExcludedLoc))
+        .map(x=>({...x, locs:(x.locs||[]).filter(l=>!isExcludedLoc(l))}));
+      return {...dup, details, students:details.length,
+        extraEnrollments:details.reduce((s,x)=>s+Math.max(0,(x.count||0)-1),0)};
+    })(),
+  };
+}
 function accF(){return DATA.access.filter(a=>fLocOk(a.loc)&&fGrOk(a.grade));}
 function regF(){return DATA.registration.filter(r=>fLocOk(r.loc)&&fGrOk(r.grade));}
 function attF(){return DATA.attendance.filter(a=>fLocOk(a.loc)&&fGrOk(a.grade));}
 function missF(){return MISSING.filter(g=>fLocOk(g.loc)&&fGrOk(g.grade));}
+function accPrev(){return DATA_PREV?DATA_PREV.access.filter(a=>fLocOk(a.loc)&&fGrOk(a.grade)):[];}
+function regPrev(){return DATA_PREV?DATA_PREV.registration.filter(r=>fLocOk(r.loc)&&fGrOk(r.grade)):[];}
+function attPrev(){return DATA_PREV?DATA_PREV.attendance.filter(a=>fLocOk(a.loc)&&fGrOk(a.grade)):[];}
+function missPrev(){return MISSING_PREV.filter(g=>fLocOk(g.loc)&&fGrOk(g.grade));}
+function dupStats(src){
+  const d=src&&src.duplicates; if(!d||!d.available) return null;
+  let details=d.details||[];
+  if(state.loc!=='ALL'||state.level!=='ALL'||state.grade!=='ALL'){
+    details=details.filter(x=>{
+      const locOk=state.loc==='ALL'||(x.locs||[]).includes(state.loc);
+      const grOk=(x.grades||[]).some(g=>fGrOk(g));
+      return locOk&&grOk;
+    });
+    return {
+      available:true,
+      students:details.length,
+      extraEnrollments:details.reduce((s,x)=>s+x.count-1,0),
+      uniqueStudents:null,
+      details,
+    };
+  }
+  return {available:true,students:d.students||0,extraEnrollments:d.extraEnrollments||0,uniqueStudents:d.uniqueStudents||0,details};
+}
+function dupF(){ return dupStats(DATA); }
+function dupPrev(){ return DATA_PREV?dupStats(DATA_PREV):null; }
 
 // ---- Missing attendance = date/class combos with NO attendance entered ----
 // A class is "missing" a date only when: (1) the date falls within the class's
 // own weekly cadence between its first and last recorded date, (2) the location
 // WAS in session that date (another class recorded), and (3) it is not a
 // scheduled holiday. This avoids flagging center-wide closures.
-function computeMissing(){
+function computeMissing(attendance, holidaySet){
   const addD=(s,n)=>{const d=new Date(s+'T00:00:00Z');d.setUTCDate(d.getUTCDate()+n);return d.toISOString().slice(0,10);};
-  const locDates={}; DATA.attendance.forEach(a=>{(locDates[a.loc]=locDates[a.loc]||new Set()).add(a.date);});
-  const cls={}; DATA.attendance.forEach(a=>{const k=a.loc+'|'+a.grade+'|'+a.section;
+  const locDates={}; attendance.forEach(a=>{(locDates[a.loc]=locDates[a.loc]||new Set()).add(a.date);});
+  const cls={}; attendance.forEach(a=>{const k=a.loc+'|'+a.grade+'|'+a.section;
     (cls[k]=cls[k]||{loc:a.loc,grade:a.grade,section:a.section,dates:new Set()}).dates.add(a.date);});
   const gaps=[];
   Object.values(cls).forEach(c=>{
     const cd=[...c.dates].sort(); const mn=cd[0],mx=cd[cd.length-1];
     if(!mn) return;
     for(let d=mn; d<=mx; d=addD(d,7)){
-      if(HOLIDAYS.has(c.loc+'|'+d)) continue;
+      if(holidaySet.has(c.loc+'|'+d)) continue;
       if(!c.dates.has(d) && locDates[c.loc].has(d)) gaps.push({loc:c.loc,grade:c.grade,section:c.section,date:d});
     }
   });
   return gaps;
+}
+
+// KPI cards with optional prior-year comparison line
+function hasPrevYear(){ return !!(PREV_YEAR && DATA_PREV); }
+function yoyLine(prevN, curN, opts={}){
+  if(!hasPrevYear() || prevN==null || prevN===undefined) return '';
+  const asPct=!!opts.pct, dec=!!opts.dec, lower=!!opts.lowerIsBetter;
+  const show=asPct?(prevN+'%'):(dec?prevN:fmt(prevN));
+  let delta='';
+  if(typeof curN==='number' && typeof prevN==='number'){
+    const raw=curN-prevN;
+    const d=asPct||dec?Math.round(raw*10)/10:Math.round(raw);
+    if(d!==0){
+      const good=lower?d<0:d>0;
+      const cls=good?'yoy-up':'yoy-down';
+      const sign=d>0?'+':'';
+      delta=` <span class="${cls}">${sign}${asPct?d+'%':(dec?d:fmt(d))}</span>`;
+    }
+  }
+  return `<div class="yoy">${show} in ${PREV_YEAR}${delta}</div>`;
+}
+function renderCards(el, cards){
+  // each: [label, valueHtml, detail, prevN, curN, opts?]
+  el.innerHTML=cards.map(c=>{
+    const [k,v,d,prevN,curN,opts]=c;
+    return `<div class="card"><div class="k">${k}</div><div class="v">${v}</div>`+
+      (d?`<div class="d">${d}</div>`:'')+yoyLine(prevN,curN,opts||{})+`</div>`;
+  }).join('');
 }
 
 // ---- sortable tables ----
@@ -81,14 +312,31 @@ function overview(){
   const marked=P+A+T+E, present=pct(P,marked);
   const gaps=missF(); const entryRate=pct(att.length, att.length+gaps.length);
   const avgAcc = acc.length? Math.round(10*acc.reduce((s,a)=>s+a.hours,0)/acc.length)/10:0;
-  document.getElementById('ovCards').innerHTML=[
-    ['Active students',fmt(active),`${inact} inactive`],
-    ['Locations',fmt(new Set(reg.map(r=>r.loc)).size),`${new Set(reg.map(r=>r.grade)).size} grades`],
-    ['Present rate',present+'%',`${fmt(P)} present marks`],
-    ['Missing sessions',fmt(gaps.length),`${entryRate}% entry rate`],
-    ['Avg access hrs',avgAcc,`${fmt(acc.length)} people`],
-    ['Sessions logged',fmt(att.length),`${new Set(att.map(a=>a.date)).size} class dates`],
-  ].map(c=>`<div class="card"><div class="k">${c[0]}</div><div class="v">${c[1]}</div><div class="d">${c[2]}</div></div>`).join('');
+
+  const regP=regPrev(), attP=attPrev(), accP=accPrev(), gapsP=missPrev();
+  const activeP=regP.reduce((s,r)=>s+r.active,0);
+  const PP=attP.reduce((s,a)=>s+a.P,0), AP=attP.reduce((s,a)=>s+a.A,0), TP=attP.reduce((s,a)=>s+a.T,0), EP=attP.reduce((s,a)=>s+a.E,0);
+  const presentP=pct(PP,PP+AP+TP+EP);
+  const avgAccP=accP.length?Math.round(10*accP.reduce((s,a)=>s+a.hours,0)/accP.length)/10:null;
+  const centers=new Set(reg.map(r=>r.loc)).size, centersP=new Set(regP.map(r=>r.loc)).size;
+  const dups=dupF(), dupsP=dupPrev();
+  const activeDetail = dups&&dups.uniqueStudents!=null
+    ? `${inact} inactive · ${fmt(dups.uniqueStudents)} unique by PersonID`
+    : `${inact} inactive`;
+
+  const cards=[
+    ['Active students',fmt(active),activeDetail, hasPrevYear()?activeP:null, active],
+    ['Centers',fmt(centers),`${new Set(reg.map(r=>r.grade)).size} grades`, hasPrevYear()?centersP:null, centers],
+    ['Present rate',present+'%',`${fmt(P)} present marks`, hasPrevYear()?presentP:null, present, {pct:1}],
+    ['Missing attendance entries',fmt(gaps.length),`${entryRate}% entry rate`, hasPrevYear()?gapsP.length:null, gaps.length, {lowerIsBetter:1}],
+    ['Avg access hrs',avgAcc,`${fmt(acc.length)} unique people`, avgAccP, avgAcc, {dec:1}],
+  ];
+  if(dups){
+    cards.push(['Duplicate students',fmt(dups.students),
+      dups.extraEnrollments?`${fmt(dups.extraEnrollments)} extra enrollments`:'by PersonID',
+      dupsP?dupsP.students:null, dups.students, {lowerIsBetter:1}]);
+  }
+  renderCards(document.getElementById('ovCards'), cards);
 
   const byLoc=groupSum(reg,r=>r.loc,['active','inactive']);
   const locs=Object.keys(byLoc).sort((a,b)=>byLoc[b].active-byLoc[a].active);
@@ -100,7 +348,7 @@ function overview(){
     options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom'}}}});
 
   bindTable(document.getElementById('ovTable'),()=>{
-    const cols=[{t:'Location'},{t:'Active',num:1},{t:'Present %',num:1},{t:'Missing sessions',num:1},{t:'Avg access hrs',num:1}];
+    const cols=[{t:'Center'},{t:'Active',num:1},{t:'Present %',num:1},{t:'Missing attendance entries',num:1},{t:'Avg access hrs',num:1}];
     const rmap=groupSum(reg,r=>r.loc,['active']);
     const amap=groupSum(att,a=>a.loc,['P','A','T','E']);
     const gapByLoc={}; gaps.forEach(g=>gapByLoc[g.loc]=(gapByLoc[g.loc]||0)+1);
@@ -120,45 +368,67 @@ function overview(){
 
 // =================== ACCESS ===================
 function access(){
-  const acc=accF();
+  const acc=accF(), accP=accPrev();
   const qc={Adequate:0,Moderate:0,Low:0,None:0}; acc.forEach(a=>qc[a.q]++);
   const tot=acc.reduce((s,a)=>s+a.hours,0);
   const good=qc.Adequate+qc.Moderate;
-  document.getElementById('acCards').innerHTML=[
-    ['People tracked',fmt(acc.length),''],
-    ['Avg access hrs',acc.length?Math.round(10*tot/acc.length)/10:0,`${fmt(Math.round(tot))} total hrs`],
-    ['Adequate + Moderate',pct(good,acc.length)+'%',`${fmt(good)} people`],
-    ['No access',qc.None,pct(qc.None,acc.length)+'% of people'],
-  ].map(c=>`<div class="card"><div class="k">${c[0]}</div><div class="v">${c[1]}</div><div class="d">${c[2]}</div></div>`).join('');
+  const qcP={Adequate:0,Moderate:0,Low:0,None:0}; accP.forEach(a=>qcP[a.q]++);
+  const totP=accP.reduce((s,a)=>s+a.hours,0);
+  const goodP=qcP.Adequate+qcP.Moderate;
+  const avg=acc.length?Math.round(10*tot/acc.length)/10:0;
+  const avgP=accP.length?Math.round(10*totP/accP.length)/10:null;
+  const goodPct=pct(good,acc.length), goodPctP=pct(goodP,accP.length);
+  renderCards(document.getElementById('acCards'), [
+    ['Total Student Count',fmt(acc.length),'unique people (duplicates merged)', hasPrevYear()?accP.length:null, acc.length],
+    ['Avg access hrs',avg,`${fmt(Math.round(tot))} total hrs`, avgP, avg, {dec:1}],
+    ['Adequate + Moderate',goodPct+'%',`${fmt(good)} people`, hasPrevYear()?goodPctP:null, goodPct, {pct:1}],
+    ['No access',qc.None,pct(qc.None,acc.length)+'% of people', hasPrevYear()?qcP.None:null, qc.None, {lowerIsBetter:1}],
+  ]);
   mk('acQ',{type:'doughnut',data:{labels:['Adequate','Moderate','Low','None'],datasets:[{data:[qc.Adequate,qc.Moderate,qc.Low,qc.None],backgroundColor:[C.green,C.teal,C.amber,C.red]}]},
     options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}}}});
   const byLoc={}; acc.forEach(a=>{(byLoc[a.loc]=byLoc[a.loc]||[]).push(a.hours);});
   const locs=Object.keys(byLoc).sort();
   mk('acLoc',{type:'bar',data:{labels:locs.map(l=>l.replace(' REC','')),datasets:[{label:'Avg hrs',data:locs.map(l=>Math.round(10*byLoc[l].reduce((s,v)=>s+v,0)/byLoc[l].length)/10),backgroundColor:C.accent2}]},
     options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}}}});
-  bindTable(document.getElementById('acTable'),()=>{
-    const cols=[{t:'Person'},{t:'Location'},{t:'Grade'},{t:'Access hrs',num:1},{t:'Quality'}];
-    const rows=acc.map(a=>{const r=[a.person,a.loc,a.grade,a.hours,qBadge(a.q)];r._raw=[a.person,a.loc,a.grade,a.hours,a.q];return r;});
-    return [cols,rows];
-  });
-  document.getElementById('acTable')._sort={i:3,dir:-1};
-  document.getElementById('acTable')._data();
+  syncAccessDetailLock();
+  if(isAccessDetailUnlocked()){
+    bindTable(document.getElementById('acTable'),()=>{
+      const cols=[{t:'Person'},{t:'Center'},{t:'Grade'},{t:'Access hrs',num:1},{t:'Quality'}];
+      const rows=acc.map(a=>{const r=[a.person,a.loc,a.grade,a.hours,qBadge(a.q)];r._raw=[a.person,a.loc,a.grade,a.hours,a.q];return r;});
+      return [cols,rows];
+    });
+    document.getElementById('acTable')._sort={i:3,dir:-1};
+    document.getElementById('acTable')._data();
+  }
 }
 
 // =================== REGISTRATION ===================
 function registration(){
-  const reg=regF();
+  const reg=regF(), regP=regPrev();
   const active=reg.reduce((s,r)=>s+r.active,0),inact=reg.reduce((s,r)=>s+r.inactive,0);
-  document.getElementById('rgCards').innerHTML=[
-    ['Active students',fmt(active),''],
-    ['Inactive students',fmt(inact),pct(inact,active+inact)+'% of roster'],
-    ['Classes',fmt(reg.length),`${new Set(reg.map(r=>r.loc)).size} locations`],
-    ['Grades offered',new Set(reg.map(r=>r.grade)).size,''],
-  ].map(c=>`<div class="card"><div class="k">${c[0]}</div><div class="v">${c[1]}</div><div class="d">${c[2]}</div></div>`).join('');
-  const byCat=groupSum(reg,r=>r.cat,['active']);
-  const cats=Object.keys(byCat).sort((a,b)=>byCat[b].active-byCat[a].active);
-  mk('rgCat',{type:'bar',data:{labels:cats,datasets:[{label:'Active',data:cats.map(c=>byCat[c].active),backgroundColor:C.accent}]},
-    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}}}});
+  const activeP=regP.reduce((s,r)=>s+r.active,0),inactP=regP.reduce((s,r)=>s+r.inactive,0);
+  const dups=dupF(), dupsP=dupPrev();
+  const activeDetail = (dups&&dups.uniqueStudents!=null)
+    ? `${pct(active,active+inact)}% of roster · ${fmt(dups.uniqueStudents)} unique by PersonID`
+    : pct(active,active+inact)+'% of roster';
+  const cards=[
+    ['Active students',fmt(active),activeDetail, hasPrevYear()?activeP:null, active],
+    ['Inactive students',fmt(inact),pct(inact,active+inact)+'% of roster', hasPrevYear()?inactP:null, inact, {lowerIsBetter:1}],
+    ['Classes',fmt(reg.length),`${new Set(reg.map(r=>r.loc)).size} centers`, hasPrevYear()?regP.length:null, reg.length],
+    ['Grades offered',new Set(reg.map(r=>r.grade)).size,'', hasPrevYear()?new Set(regP.map(r=>r.grade)).size:null, new Set(reg.map(r=>r.grade)).size],
+  ];
+  if(dups){
+    cards.push(['Duplicate students',fmt(dups.students),
+      dups.extraEnrollments?`${fmt(dups.extraEnrollments)} extra enrollments`:'same PersonID in multiple classes',
+      dupsP?dupsP.students:null, dups.students, {lowerIsBetter:1}]);
+  }
+  renderCards(document.getElementById('rgCards'), cards);
+  const byCat=groupSum(reg,r=>displayCat(r),['active','inactive']);
+  const cats=Object.keys(byCat).sort(sortCats);
+  mk('rgCat',{type:'bar',data:{labels:cats,datasets:[
+    {label:'Active',data:cats.map(c=>byCat[c].active),backgroundColor:C.green},
+    {label:'Inactive',data:cats.map(c=>byCat[c].inactive),backgroundColor:C.red}]},
+    options:{responsive:true,maintainAspectRatio:false,scales:{x:{stacked:true},y:{stacked:true}},plugins:{legend:{position:'bottom'}}}});
   const byLoc=groupSum(reg,r=>r.loc,['active','inactive']);
   const locs=Object.keys(byLoc).sort((a,b)=>byLoc[b].active-byLoc[a].active);
   mk('rgLoc',{type:'bar',data:{labels:locs.map(l=>l.replace(' REC','')),datasets:[
@@ -166,35 +436,60 @@ function registration(){
     {label:'Inactive',data:locs.map(l=>byLoc[l].inactive),backgroundColor:C.red}]},
     options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,scales:{x:{stacked:true},y:{stacked:true}},plugins:{legend:{position:'bottom'}}}});
   bindTable(document.getElementById('rgTable'),()=>{
-    const cols=[{t:'Location'},{t:'Category'},{t:'Grade'},{t:'Section'},{t:'Active',num:1},{t:'Inactive',num:1}];
-    const rows=reg.map(r=>{const x=[r.loc,r.cat,r.grade,r.section||'—',r.active,r.inactive];return x;});
+    const cols=[{t:'Center'},{t:'Grade level'},{t:'Grade'},{t:'Section'},{t:'Active',num:1},{t:'Inactive',num:1}];
+    const rows=reg.map(r=>{const x=[r.loc,displayCat(r),r.grade,r.section||'—',r.active,r.inactive];return x;});
     return [cols,rows];
   });
   document.getElementById('rgTable')._sort={i:4,dir:-1};
   document.getElementById('rgTable')._data();
+
+  const dupPanel=document.getElementById('rgDupPanel');
+  if(dupPanel){
+    if(!dups){
+      dupPanel.hidden=true;
+    } else {
+      dupPanel.hidden=false;
+      bindTable(document.getElementById('rgDupTable'),()=>{
+        const cols=[{t:'Person'},{t:'PersonID'},{t:'Enrollments',num:1},{t:'Centers'},{t:'Grades'}];
+        const rows=(dups.details||[]).map(x=>{
+          const locs=(x.locs||[]).map(l=>l.replace(' REC','')).join(', ');
+          const grades=(x.grades||[]).join(', ');
+          const r=[x.name||'—',x.id,x.count,locs||'—',grades||'—'];
+          r._raw=[x.name,x.id,x.count,locs,grades]; return r;
+        });
+        if(!rows.length) return [cols,[['—','—','—','No duplicate PersonIDs in this filter','—']]];
+        return [cols,rows];
+      });
+      document.getElementById('rgDupTable')._sort={i:2,dir:-1};
+      document.getElementById('rgDupTable')._data();
+    }
+  }
 }
 
 // =================== ATTENDANCE ===================
 function attendance(){
-  const att=attF();
+  const att=attF(), attP=attPrev();
   const P=att.reduce((s,a)=>s+a.P,0),A=att.reduce((s,a)=>s+a.A,0),T=att.reduce((s,a)=>s+a.T,0),E=att.reduce((s,a)=>s+a.E,0),M=att.reduce((s,a)=>s+a.M,0);
   const mkd=P+A+T+E;
-  document.getElementById('atCards').innerHTML=[
-    ['Present %',pct(P,mkd)+'%',`${fmt(P)} present`],
-    ['Absent %',pct(A,mkd)+'%',`${fmt(A)} absent`],
-    ['Tardy + Excused',fmt(T+E),`${pct(T+E,mkd)}% of marks`],
-    ['Sessions',fmt(att.length),`${new Set(att.map(a=>a.date)).size} dates`],
-  ].map(c=>`<div class="card"><div class="k">${c[0]}</div><div class="v">${c[1]}</div><div class="d">${c[2]}</div></div>`).join('');
+  const PP=attP.reduce((s,a)=>s+a.P,0),AP=attP.reduce((s,a)=>s+a.A,0),TP=attP.reduce((s,a)=>s+a.T,0),EP=attP.reduce((s,a)=>s+a.E,0);
+  const mkdP=PP+AP+TP+EP;
+  const present=pct(P,mkd), absent=pct(A,mkd), te=T+E;
+  renderCards(document.getElementById('atCards'), [
+    ['Present %',present+'%',`${fmt(P)} present`, hasPrevYear()?pct(PP,mkdP):null, present, {pct:1}],
+    ['Absent %',absent+'%',`${fmt(A)} absent`, hasPrevYear()?pct(AP,mkdP):null, absent, {pct:1, lowerIsBetter:1}],
+    ['Tardy + Excused',fmt(te),`${pct(te,mkd)}% of marks`, hasPrevYear()?(TP+EP):null, te],
+    ['Entries',fmt(att.length),`${new Set(att.map(a=>a.date)).size} dates`, hasPrevYear()?attP.length:null, att.length],
+  ]);
   const byDate=groupSum(att,a=>a.date,['P','A','T','E']);
   const dates=Object.keys(byDate).sort();
-  mk('atTrend',{type:'line',data:{labels:dates,datasets:[{label:'Present %',data:dates.map(d=>{const x=byDate[d];return pct(x.P,x.P+x.A+x.T+x.E);}),borderColor:C.green,backgroundColor:'rgba(53,194,142,.12)',fill:true,tension:.3,pointRadius:0}]},
-    options:{responsive:true,maintainAspectRatio:false,scales:{y:{min:0,max:100},x:{ticks:{maxTicksLimit:8}}},plugins:{legend:{display:false}}}});
+  mk('atTrend',{type:'line',data:{labels:dates,datasets:[{label:'Present %',data:dates.map(d=>{const x=byDate[d];return pct(x.P,x.P+x.A+x.T+x.E);}),borderColor:C.green,backgroundColor:C.chartFill,fill:true,tension:.3,pointRadius:0}]},
+    options:{responsive:true,maintainAspectRatio:false,scales:{y:{min:0,max:100},x:{ticks:{maxTicksLimit:8}}},plugins:{legend:{display:false},valueLabels:{format:pctLabel}}}});
   const byGr=groupSum(att,a=>a.grade,['P','A','T','E']);
   const grs=Object.keys(byGr).sort((a,b)=>{let ia=gradeOrder.indexOf(a),ib=gradeOrder.indexOf(b);return (ia<0?99:ia)-(ib<0?99:ib);});
   mk('atGrade',{type:'bar',data:{labels:grs,datasets:[{label:'Present %',data:grs.map(g=>{const x=byGr[g];return pct(x.P,x.P+x.A+x.T+x.E);}),backgroundColor:C.teal}]},
-    options:{responsive:true,maintainAspectRatio:false,scales:{y:{min:0,max:100}},plugins:{legend:{display:false}}}});
+    options:{responsive:true,maintainAspectRatio:false,scales:{y:{min:0,max:100}},plugins:{legend:{display:false},valueLabels:{format:pctLabel}}}});
   bindTable(document.getElementById('atTable'),()=>{
-    const cols=[{t:'Location'},{t:'Present',num:1},{t:'Absent',num:1},{t:'Tardy',num:1},{t:'Excused',num:1},{t:'Unmarked',num:1},{t:'Present %',num:1}];
+    const cols=[{t:'Center'},{t:'Present',num:1},{t:'Absent',num:1},{t:'Tardy',num:1},{t:'Excused',num:1},{t:'Unmarked',num:1},{t:'Present %',num:1}];
     const byLoc=groupSum(att,a=>a.loc,['P','A','T','E','M']);
     const rows=uniq(Object.keys(byLoc)).map(l=>{const x=byLoc[l];const m=x.P+x.A+x.T+x.E;const pr=pct(x.P,m);
       const prc=pr>=80?'p-green':pr>=65?'p-amber':'p-red';
@@ -203,36 +498,103 @@ function attendance(){
   });
   document.getElementById('atTable')._sort={i:6,dir:-1};
   document.getElementById('atTable')._data();
+
+  const attRow=(keyParts,x)=>{
+    const m=x.P+x.A+x.T+x.E; const pr=pct(x.P,m);
+    const prc=pr>=80?'p-green':pr>=65?'p-amber':'p-red';
+    const r=[...keyParts,x.P,x.A,x.T,x.E,x.M,`<span class="pill ${prc}">${pr}%</span>`];
+    r._raw=[...keyParts,x.P,x.A,x.T,x.E,x.M,pr]; return r;
+  };
+  const gradeSort=(a,b)=>{const ia=gradeOrder.indexOf(a),ib=gradeOrder.indexOf(b);return (ia<0?99:ia)-(ib<0?99:ib);};
+
+  bindTable(document.getElementById('atGradeTable'),()=>{
+    const cols=[{t:'Grade'},{t:'Present',num:1},{t:'Absent',num:1},{t:'Tardy',num:1},{t:'Excused',num:1},{t:'Unmarked',num:1},{t:'Present %',num:1}];
+    const byGrade=groupSum(att,a=>a.grade,['P','A','T','E','M']);
+    const rows=Object.keys(byGrade).sort(gradeSort).map(g=>attRow([g],byGrade[g]));
+    return [cols,rows];
+  });
+  document.getElementById('atGradeTable')._sort={i:0,dir:1};
+  document.getElementById('atGradeTable')._data();
+
+  bindTable(document.getElementById('atGradeLocTable'),()=>{
+    const cols=[{t:'Center'},{t:'Grade'},{t:'Present',num:1},{t:'Absent',num:1},{t:'Tardy',num:1},{t:'Excused',num:1},{t:'Unmarked',num:1},{t:'Present %',num:1}];
+    const by=groupSum(att,a=>a.loc+'|'+a.grade,['P','A','T','E','M']);
+    const rows=Object.keys(by).sort((a,b)=>{
+      const [la,ga]=a.split('|'),[lb,gb]=b.split('|');
+      return la.localeCompare(lb)||gradeSort(ga,gb);
+    }).map(k=>{const [loc,grade]=k.split('|'); return attRow([loc,grade],by[k]);});
+    return [cols,rows];
+  });
+  document.getElementById('atGradeLocTable')._sort={i:0,dir:1};
+  document.getElementById('atGradeLocTable')._data();
 }
 
 // ---- entry matrix: classes (rows) × dates (cols) ----
+// Only show dates where at least one visible class was scheduled
+// (entered or missing). Holiday-only / out-of-window days are omitted.
+// Legend chips toggle row filters (miss / fully entered / holiday).
+function syncMatrixLegend(){
+  document.querySelectorAll('#msLegend .mxleg').forEach(b=>{
+    b.classList.toggle('active', b.dataset.mx===state.matrix);
+  });
+}
 function buildMatrix(att, gaps){
   const el=document.getElementById('msMatrix');
+  syncMatrixLegend();
   const entered=new Set(att.map(a=>a.loc+'|'+a.grade+'|'+a.section+'|'+a.date));
   const missSet=new Set(gaps.map(g=>g.loc+'|'+g.grade+'|'+g.section+'|'+g.date));
   const classes={}; att.forEach(a=>{const k=a.loc+'|'+a.grade+'|'+a.section;
-    (classes[k]=classes[k]||{loc:a.loc,grade:a.grade,section:a.section,dates:[]}).dates.push(a.date);});
-  const clsList=Object.values(classes).sort((a,b)=>a.loc.localeCompare(b.loc)||
-    (gradeOrder.indexOf(a.grade)-gradeOrder.indexOf(b.grade))||a.section.localeCompare(b.section));
-  const dates=uniq(att.map(a=>a.date));
-  if(!clsList.length){el.innerHTML='<div class="note">No classes match the current filter.</div>';return;}
+    (classes[k]=classes[k]||{loc:a.loc,grade:a.grade,section:a.section,dates:new Set()}).dates.add(a.date);});
+  const allCls=Object.values(classes).sort((a,b)=>a.loc.localeCompare(b.loc)||
+    (gradeOrder.indexOf(a.grade)-gradeOrder.indexOf(b.grade))||String(a.section).localeCompare(String(b.section)));
+  const candidateDates=uniq([...att.map(a=>a.date),...gaps.map(g=>g.date)]);
+  const ck=c=>c.loc+'|'+c.grade+'|'+c.section;
+  const hasMiss=c=>gaps.some(g=>g.loc===c.loc&&g.grade===c.grade&&g.section===c.section);
+  const hasHol=c=>{
+    const cd=[...c.dates].sort(); if(!cd.length) return false;
+    const mn=cd[0], mx=cd[cd.length-1];
+    return [...HOLIDAYS].some(h=>{
+      if(!h.startsWith(c.loc+'|')) return false;
+      const d=h.slice(c.loc.length+1);
+      return d>=mn && d<=mx;
+    });
+  };
+
+  let clsList=allCls;
+  if(state.matrix==='miss') clsList=allCls.filter(hasMiss);
+  else if(state.matrix==='ok') clsList=allCls.filter(c=>!hasMiss(c));
+  else if(state.matrix==='hol') clsList=allCls.filter(hasHol);
+
+  const dates=candidateDates.filter(d=>clsList.some(c=>{
+    const key=ck(c)+'|'+d;
+    return entered.has(key)||missSet.has(key);
+  }));
+
+  if(!allCls.length){el.innerHTML='<div class="note">No classes match the current filter.</div>';return;}
+  if(!clsList.length){
+    const labels={miss:'with missing attendance',ok:'with all entries logged',hol:'with a scheduled holiday'};
+    el.innerHTML=`<div class="note">No classes ${labels[state.matrix]||'match'}. Click the active legend chip again to clear.</div>`;
+    return;
+  }
+  if(!dates.length){el.innerHTML='<div class="note">No scheduled class days match the current filter.</div>';return;}
+
   let seenMonth=null;
   const head=dates.map(d=>{const mo=d.slice(0,7);const isNew=mo!==seenMonth;seenMonth=mo;
+    const day=DAYS[new Date(d+'T00:00:00Z').getUTCDay()];
     const lbl=d.slice(8,10); const cls=isNew?'mon':'';
     const mlabel=isNew?`<div style="font-size:9px;color:var(--muted)">${MONTHS[+d.slice(5,7)-1]}</div>`:'<div style="height:12px"></div>';
-    return `<th class="${cls}">${mlabel}${lbl}</th>`;}).join('');
+    return `<th class="${cls}" title="${d}">${mlabel}<div style="font-size:9px;color:var(--muted)">${day}</div>${lbl}</th>`;}).join('');
   const rows=clsList.map(c=>{
-    c.dates.sort();
     seenMonth=null;
     const cells=dates.map(d=>{const mo=d.slice(0,7);const isNew=mo!==seenMonth;seenMonth=mo;const b=isNew?' mon':'';
-      const key=c.loc+'|'+c.grade+'|'+c.section+'|'+d;
+      const key=ck(c)+'|'+d;
       const isHol=HOLIDAYS.has(c.loc+'|'+d);
       let dot='';
       if(entered.has(key)) dot='<span class="cd ok"></span>';
       else if(isHol) dot='<span class="cd hol" title="Holiday '+d+'"></span>';
       else if(missSet.has(key)) dot='<span class="cd miss" title="No attendance entered '+d+'"></span>';
       return `<td class="cell${b}">${dot}</td>`;}).join('');
-    const missCount=dates.filter(d=>missSet.has(c.loc+'|'+c.grade+'|'+c.section+'|'+d)).length;
+    const missCount=dates.filter(d=>missSet.has(ck(c)+'|'+d)).length;
     const lbl=`${c.loc.replace(' REC','')} · ${c.grade}${c.section?'-'+c.section:''}`+(missCount?` <span class="pill p-red" style="padding:0 6px">${missCount}</span>`:'');
     return `<tr><td class="rowlbl">${lbl}</td>${cells}</tr>`;
   }).join('');
@@ -246,22 +608,27 @@ function missing(){
   const recorded=att.length, expected=recorded+gaps.length;
   const affClasses=new Set(gaps.map(g=>g.loc+'|'+g.grade+'|'+g.section)).size;
   const affLocs=new Set(gaps.map(g=>g.loc)).size;
-  document.getElementById('msCards').innerHTML=[
-    ['Missing sessions',fmt(gaps.length),'date/class combos with no entry'],
-    ['Entry rate',pct(recorded,expected)+'%',`${fmt(recorded)} of ${fmt(expected)} expected`],
-    ['Classes affected',fmt(affClasses),'have ≥1 missing session'],
-    ['Locations affected',fmt(affLocs),'with missing entries'],
-  ].map(c=>`<div class="card"><div class="k">${c[0]}</div><div class="v">${c[1]}</div><div class="d">${c[2]}</div></div>`).join('');
+  const gapsP=missPrev(), attP=attPrev();
+  const recordedP=attP.length, expectedP=recordedP+gapsP.length;
+  const affClassesP=new Set(gapsP.map(g=>g.loc+'|'+g.grade+'|'+g.section)).size;
+  const affLocsP=new Set(gapsP.map(g=>g.loc)).size;
+  const entryRate=pct(recorded,expected), entryRateP=pct(recordedP,expectedP);
+  renderCards(document.getElementById('msCards'), [
+    ['Missing attendance entries',fmt(gaps.length),'date/class combos with no entry', hasPrevYear()?gapsP.length:null, gaps.length, {lowerIsBetter:1}],
+    ['Entry rate',entryRate+'%',`${fmt(recorded)} of ${fmt(expected)} expected`, hasPrevYear()?entryRateP:null, entryRate, {pct:1}],
+    ['Classes affected',fmt(affClasses),'have ≥1 missing entry', hasPrevYear()?affClassesP:null, affClasses, {lowerIsBetter:1}],
+    ['Centers affected',fmt(affLocs),'with missing entries', hasPrevYear()?affLocsP:null, affLocs, {lowerIsBetter:1}],
+  ]);
 
   buildMatrix(att, gaps);
 
   const byLoc={}; gaps.forEach(g=>byLoc[g.loc]=(byLoc[g.loc]||0)+1);
   const locs=Object.keys(byLoc).sort((a,b)=>byLoc[b]-byLoc[a]);
-  mk('msLoc',{type:'bar',data:{labels:locs.map(l=>l.replace(' REC','')),datasets:[{label:'Missing sessions',data:locs.map(l=>byLoc[l]),backgroundColor:C.amber}]},
+  mk('msLoc',{type:'bar',data:{labels:locs.map(l=>l.replace(' REC','')),datasets:[{label:'Missing attendance entries',data:locs.map(l=>byLoc[l]),backgroundColor:C.amber}]},
     options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}}}});
 
   bindTable(document.getElementById('msGap'),()=>{
-    const cols=[{t:'Location'},{t:'Grade'},{t:'Section'},{t:'Missing',num:1}];
+    const cols=[{t:'Center'},{t:'Grade'},{t:'Section'},{t:'Missing',num:1}];
     const cm={}; gaps.forEach(g=>{const k=g.loc+'|'+g.grade+'|'+g.section;cm[k]=(cm[k]||0)+1;});
     const rows=Object.keys(cm).map(k=>{const p=k.split('|');return [p[0],p[1],p[2]||'—',cm[k]];});
     if(!rows.length)return[cols,[['—','—','—','—']]];
@@ -271,9 +638,9 @@ function missing(){
   document.getElementById('msGap')._data();
 
   bindTable(document.getElementById('msTable'),()=>{
-    const cols=[{t:'Location'},{t:'Grade'},{t:'Section'},{t:'Date (no attendance entered)'},{t:'Status'}];
+    const cols=[{t:'Center'},{t:'Grade'},{t:'Section'},{t:'Date (no attendance entered)'},{t:'Status'}];
     const rows=gaps.map(g=>{const r=[g.loc,g.grade,g.section||'—',g.date,'<span class="pill p-red">No entry</span>'];r._raw=[g.loc,g.grade,g.section,g.date,g.date];return r;});
-    if(!rows.length)return[cols,[['—','—','—','No missing sessions','<span class="pill p-green">All entered</span>']]];
+    if(!rows.length)return[cols,[['—','—','—','No missing attendance entries','<span class="pill p-green">All entered</span>']]];
     return [cols,rows];
   });
   document.getElementById('msTable')._sort={i:3,dir:1};
@@ -291,8 +658,59 @@ document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
   current=t.dataset.p; render();
 });
 fLoc.onchange=()=>{state.loc=fLoc.value; render();};
+fLevel.onchange=()=>{
+  state.level=fLevel.value;
+  refreshGradeOptions();
+  if(state.grade!=='ALL'&&!fLevelOk(state.grade)){ state.grade='ALL'; fGrade.value='ALL'; }
+  render();
+};
 fGrade.onchange=()=>{state.grade=fGrade.value; render();};
-document.getElementById('reset').onclick=()=>{state.loc='ALL';state.grade='ALL';fLoc.value='ALL';fGrade.value='ALL';render();};
+document.getElementById('reset').onclick=()=>{
+  state.loc='ALL';state.level='ALL';state.grade='ALL';state.matrix=null;
+  fLoc.value='ALL';fLevel.value='ALL';refreshGradeOptions();fGrade.value='ALL';
+  render();
+};
+document.getElementById('msLegend').addEventListener('click',e=>{
+  const btn=e.target.closest('.mxleg'); if(!btn) return;
+  const kind=btn.dataset.mx;
+  state.matrix=(state.matrix===kind)?null:kind;
+  if(current==='missing') missing();
+  else syncMatrixLegend();
+});
+
+// ---- Access detail password gate ----
+function isAccessDetailUnlocked(){
+  try{return sessionStorage.getItem(ACCESS_DETAIL_KEY)==='1';}catch(_){return false;}
+}
+function setAccessDetailUnlocked(on){
+  try{ if(on) sessionStorage.setItem(ACCESS_DETAIL_KEY,'1'); else sessionStorage.removeItem(ACCESS_DETAIL_KEY); }catch(_){}
+}
+function syncAccessDetailLock(){
+  const unlocked=isAccessDetailUnlocked();
+  const lock=document.getElementById('acLock');
+  const detail=document.getElementById('acDetail');
+  if(lock) lock.hidden=unlocked;
+  if(detail) detail.hidden=!unlocked;
+  const err=document.getElementById('acLockErr');
+  if(err && unlocked) err.hidden=true;
+}
+function tryUnlockAccessDetail(){
+  const input=document.getElementById('acPass');
+  const err=document.getElementById('acLockErr');
+  if((input&&input.value)===ACCESS_DETAIL_PASSWORD){
+    setAccessDetailUnlocked(true);
+    if(input) input.value='';
+    if(err) err.hidden=true;
+    if(current==='access') access();
+    else syncAccessDetailLock();
+  } else {
+    if(err) err.hidden=false;
+    if(input){ input.value=''; input.focus(); }
+  }
+}
+document.getElementById('acUnlock').onclick=tryUnlockAccessDetail;
+document.getElementById('acPass').addEventListener('keydown',e=>{ if(e.key==='Enter') tryUnlockAccessDetail(); });
+syncAccessDetailLock();
 
 // ---- data loading (region / year aware) ----
 const fRegion=document.getElementById('fRegion'), fYear=document.getElementById('fYear');
@@ -300,14 +718,28 @@ let CAT={regions:[],years:{},files:{}};
 const sel={region:null, year:null};
 
 function fillSelect(el,vals){const cur=el.value;el.innerHTML='<option value="ALL">All</option>'+vals.map(v=>`<option>${v}</option>`).join('');el.value=[...el.options].some(o=>o.value===cur)?cur:'ALL';}
+function refreshGradeOptions(){
+  const grades=state.level==='ALL'?ALL_GRADES:ALL_GRADES.filter(g=>gradeLevelOf(g)===state.level);
+  fillSelect(fGrade, grades);
+  state.grade=fGrade.value;
+}
 
 function fillPlain(el,vals,current){
   el.innerHTML=vals.map(v=>`<option>${v}</option>`).join('');
   el.value=vals.includes(current)?current:(vals[0]||'');
 }
+function prettyRegion(r){
+  if(!r) return '';
+  return String(r).split(/[-_\s]+/).filter(Boolean)
+    .map(w=>w.charAt(0).toUpperCase()+w.slice(1).toLowerCase()).join(' ');
+}
+function fillRegion(el,vals,current){
+  el.innerHTML=vals.map(v=>`<option value="${v}">${prettyRegion(v)}</option>`).join('');
+  el.value=vals.includes(current)?current:(vals[0]||'');
+}
 
 function populateRegionYear(){
-  fillPlain(fRegion, CAT.regions, sel.region);
+  fillRegion(fRegion, CAT.regions, sel.region);
   if(!CAT.regions.includes(sel.region)) sel.region=CAT.regions[0]||null;
   fRegion.value=sel.region||'';
   const years=CAT.years[sel.region]||[];
@@ -321,7 +753,7 @@ function setStatus(meta){
   if(!meta){el.textContent='';return;}
   const order=['access','registration','attendance','holidays'];
   const parts=order.filter(k=>meta.files&&meta.files[k]).map(k=>`<b>${k}</b> ${fmt(meta.files[k].rows)}`);
-  const ds=(meta.region?`<b>${meta.region}</b> · <b>${meta.year}</b> — `:'');
+  const ds=(meta.region?`<b>${prettyRegion(meta.region)}</b> · <b>${meta.year}</b> — `:'');
   el.innerHTML=ds+(parts.length?('rows: '+parts.join(' · ')):'no report files in this dataset')+
     (meta.generated?` · loaded ${meta.generated.replace('T',' ')}`:'');
 }
@@ -347,15 +779,39 @@ async function loadData(){
     if(meta.year) sel.year=meta.year;
     populateRegionYear();
 
-    DATA={access:payload.access||[],registration:payload.registration||[],
-          attendance:payload.attendance||[],holidays:payload.holidays||[]};
+    DATA=scrubData({access:payload.access||[],registration:payload.registration||[],
+          attendance:payload.attendance||[],holidays:payload.holidays||[],
+          duplicates:payload.duplicates||{available:false,students:0,extraEnrollments:0,uniqueStudents:0,details:[]}});
     HOLIDAYS=new Set(DATA.holidays);
-    MISSING=computeMissing();
+    MISSING=computeMissing(DATA.attendance, HOLIDAYS);
+
+    // Prior year (same region) for KPI comparisons — years list is newest-first
+    const years=CAT.years[sel.region]||[];
+    const yi=years.indexOf(sel.year);
+    PREV_YEAR=(yi>=0 && yi<years.length-1)?years[yi+1]:null;
+    DATA_PREV=null; MISSING_PREV=[];
+    if(PREV_YEAR){
+      try{
+        const pqs=`?region=${encodeURIComponent(sel.region)}&year=${encodeURIComponent(PREV_YEAR)}`;
+        const pres=await fetch('/api/data'+pqs,{cache:'no-store'});
+        if(pres.ok){
+          const pp=await pres.json();
+          if(!pp.error){
+            DATA_PREV=scrubData({access:pp.access||[],registration:pp.registration||[],
+              attendance:pp.attendance||[],holidays:pp.holidays||[],
+              duplicates:pp.duplicates||{available:false,students:0,extraEnrollments:0,uniqueStudents:0,details:[]}});
+            MISSING_PREV=computeMissing(DATA_PREV.attendance, new Set(DATA_PREV.holidays));
+          }
+        }
+      }catch(_){ DATA_PREV=null; MISSING_PREV=[]; PREV_YEAR=null; }
+    }
+
     const allLoc=uniq([...DATA.registration.map(r=>r.loc),...DATA.attendance.map(a=>a.loc),...DATA.access.map(a=>a.loc)].filter(Boolean));
-    const allGrade=uniq([...DATA.registration.map(r=>r.grade),...DATA.attendance.map(a=>a.grade),...DATA.access.map(a=>a.grade)].filter(Boolean))
+    ALL_GRADES=uniq([...DATA.registration.map(r=>r.grade),...DATA.attendance.map(a=>a.grade),...DATA.access.map(a=>a.grade)].filter(Boolean))
       .sort((a,b)=>{let ia=gradeOrder.indexOf(a),ib=gradeOrder.indexOf(b);return (ia<0?99:ia)-(ib<0?99:ib);});
-    fillSelect(fLoc,allLoc); fillSelect(fGrade,allGrade);
-    state.loc=fLoc.value; state.grade=fGrade.value;
+    fillSelect(fLoc,allLoc);
+    state.loc=fLoc.value; state.level=fLevel.value;
+    refreshGradeOptions();
     setStatus(meta);
 
     const present=['access','registration','attendance'].filter(k=>meta.files&&meta.files[k]);
@@ -363,7 +819,7 @@ async function loadData(){
     if(!CAT.regions.length){
       showBanner('No datasets found. Organise exports as <b>data/&lt;region&gt;/&lt;year&gt;/*.csv</b> (e.g. data/central/2025-2026/), then click Refresh.',true);
     } else if(!present.length){
-      showBanner('No report files found for <b>'+sel.region+' · '+sel.year+'</b>. Add the exports to that folder and Refresh.',true);
+      showBanner('No report files found for <b>'+prettyRegion(sel.region)+' · '+sel.year+'</b>. Add the exports to that folder and Refresh.',true);
     } else if(miss.length){
       showBanner('This dataset is missing: <b>'+miss.join(', ')+'</b>. Those reports will be empty until you add the export to data/'+sel.region+'/'+sel.year+'/.',false);
     } else {

@@ -26,6 +26,12 @@ WEB_DIR = os.path.join(ROOT, "web")
 
 QLEVELS = {"Adequate", "Moderate", "Low", "None"}
 
+# Test / non-reporting centers omitted from all aggregates.
+def _excluded_loc(name):
+    """True for known test centers (e.g. NTX Virtual REC)."""
+    n = (name or "").strip().lower().replace("  ", " ")
+    return ("ntx virtual" in n) or n in {"ntx virtual", "ntx virtual rec"}
+
 
 # ----------------------------- helpers -----------------------------
 def _num(v):
@@ -88,9 +94,77 @@ def classify(headers):
         return "registration"
     if "Week ending" in h and "REC" in h:
         return "holidays"
-    if {"PersonID", "JamatiTitle"} <= h:
-        return "contact"  # detected but not used by the reports
+    # Student roster with PersonID (detail export); phone-only exports lack PersonID
+    if "PersonID" in h and ("JamatiTitle" in h or "Grade" in h):
+        return "contact"
     return None
+
+
+Q_RANK = {"Adequate": 3, "Moderate": 2, "Low": 1, "None": 0}
+
+
+def _person_name(row):
+    parts = [
+        (row.get("textbox68") or "").strip(),
+        (row.get("MName") or "").strip(),
+        (row.get("LName") or "").strip(),
+    ]
+    return " ".join(p for p in parts if p)
+
+
+def _dedupe_access(rows):
+    """Collapse duplicate Person rows: sum hours, keep best quality / primary loc."""
+    best = {}
+    dup_people = set()
+    for row in rows:
+        p = (row.get("person") or "").strip()
+        key = p or id(row)
+        if key not in best:
+            best[key] = dict(row)
+            best[key]["_seg"] = row["hours"]
+            continue
+        dup_people.add(key)
+        b = best[key]
+        b["hours"] = round(b["hours"] + row["hours"], 1)
+        if row["hours"] > b.get("_seg", 0):
+            b["_seg"] = row["hours"]
+            b["loc"] = row["loc"]
+            b["grade"] = row["grade"]
+        if Q_RANK.get(row["q"], 0) > Q_RANK.get(b["q"], 0):
+            b["q"] = row["q"]
+    out = []
+    for b in best.values():
+        b.pop("_seg", None)
+        out.append(b)
+    return out, len(dup_people)
+
+
+def _roster_duplicates(rows):
+    """Build PersonID duplicate summary from contact roster rows."""
+    by_id = {}
+    for r in rows:
+        pid = r["id"]
+        by_id.setdefault(pid, []).append(r)
+    details = []
+    for pid, items in by_id.items():
+        if len(items) < 2:
+            continue
+        details.append({
+            "id": pid,
+            "name": items[0].get("name") or pid,
+            "count": len(items),
+            "locs": sorted({x["loc"] for x in items if x.get("loc")}),
+            "grades": sorted({x["grade"] for x in items if x.get("grade")}),
+        })
+    details.sort(key=lambda d: (-d["count"], d["name"]))
+    extra = sum(d["count"] - 1 for d in details)
+    return {
+        "students": len(details),
+        "extraEnrollments": extra,
+        "uniqueStudents": len(by_id),
+        "rows": len(rows),
+        "details": details,
+    }
 
 
 def _region_year(path):
@@ -182,7 +256,20 @@ def build_payload(region=None, year=None):
         "catalog": catalog_json(groups),
         "generated": datetime.datetime.now().isoformat(timespec="seconds"),
     }
-    data = {"access": [], "registration": [], "attendance": [], "holidays": []}
+    data = {
+        "access": [],
+        "registration": [],
+        "attendance": [],
+        "holidays": [],
+        "duplicates": {
+            "students": 0,
+            "extraEnrollments": 0,
+            "uniqueStudents": 0,
+            "rows": 0,
+            "details": [],
+            "available": False,
+        },
+    }
 
     def note(kind, path, count):
         meta["files"][kind] = {
@@ -201,6 +288,8 @@ def build_payload(region=None, year=None):
         for x in rows:
             if x.get("LocationType") != "REC":
                 continue
+            if _excluded_loc(x.get("Location")):
+                continue
             q = x.get("AccessQ")
             q = q if q in QLEVELS else "None"
             out.append({
@@ -210,7 +299,11 @@ def build_payload(region=None, year=None):
                 "hours": round(_fnum(x.get("TotalAccessHours")), 1),
                 "q": q,
             })
+        raw_n = len(out)
+        out, access_dups = _dedupe_access(out)
         data["access"] = out
+        meta["access_raw_rows"] = raw_n
+        meta["access_duplicate_people"] = access_dups
         note("access", path, len(out))
 
     # REGISTRATION (student count by class)
@@ -225,7 +318,7 @@ def build_payload(region=None, year=None):
             "section": x.get("Section", ""),
             "active": _num(x.get("StudentActive")),
             "inactive": _num(x.get("StudentInActive")),
-        } for x in rows]
+        } for x in rows if not _excluded_loc(x.get("Location"))]
         data["registration"] = out
         note("registration", path, len(out))
 
@@ -242,7 +335,7 @@ def build_payload(region=None, year=None):
             "P": _num(x.get("P")), "A": _num(x.get("A")),
             "T": _num(x.get("T")), "E": _num(x.get("E")),
             "M": _num(x.get("M1")), "total": _num(x.get("TotalPosition")),
-        } for x in rows]
+        } for x in rows if not _excluded_loc(x.get("Location1"))]
         data["attendance"] = out
         note("attendance", path, len(out))
 
@@ -253,6 +346,8 @@ def build_payload(region=None, year=None):
         keys = set()
         for x in rows:
             loc = (x.get("REC") or "").strip()
+            if _excluded_loc(loc):
+                continue
             dt = _parse_short_date(x.get("Week ending"))
             if loc and dt:
                 keys.add(loc + "|" + dt)
@@ -260,7 +355,25 @@ def build_payload(region=None, year=None):
         note("holidays", path, len(keys))
 
     if "contact" in found:
-        note("contact", found["contact"][0], -1)  # detected, unused
+        path = found["contact"][0]
+        _, rows = _read_csv(path)
+        roster = []
+        for x in rows:
+            if _excluded_loc(x.get("Location")):
+                continue
+            pid = (x.get("PersonID") or "").strip()
+            if not pid:
+                continue
+            roster.append({
+                "id": pid,
+                "name": _person_name(x),
+                "loc": x.get("Location", ""),
+                "grade": x.get("Grade", ""),
+                "section": x.get("Section", ""),
+            })
+        data["duplicates"] = _roster_duplicates(roster)
+        data["duplicates"]["available"] = True
+        note("contact", path, len(roster))
 
     data["meta"] = meta
     # note which expected types are missing
