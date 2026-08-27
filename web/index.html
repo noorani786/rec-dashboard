@@ -158,7 +158,7 @@
     </div>
     <div class="panel"><h3>Missing attendance entries (date · class with no entry)</h3>
       <div class="tablewrap"><table id="msTable"></table></div>
-      <div class="note">An entry is flagged only when <b>no attendance was entered</b> for that class on a date it was expected to meet. Expected dates use each class's own weekly cadence within its active window, are counted only when the center was in session that day, and <b>exclude the scheduled holidays</b> from holidays.csv. Partial entries where some students were left unmarked are <b>not</b> counted here.</div>
+      <div class="note">An entry is flagged when <b>no attendance was entered</b> for that class on a date the center was in session (another class recorded), excluding holidays. Classes with some entries are checked on their weekly cadence within their active window. <b>Registered classes with active students but zero entries</b> are also listed and marked missing for every in-session date at that center. Partial entries where some students were left unmarked are <b>not</b> counted here.</div>
     </div>
   </section>
 </main>
