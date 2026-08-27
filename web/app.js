@@ -232,11 +232,12 @@ function dupF(){ return dupStats(DATA); }
 function dupPrev(){ return DATA_PREV?dupStats(DATA_PREV):null; }
 
 // ---- Missing attendance = date/class combos with NO attendance entered ----
-// A class is "missing" a date only when: (1) the date falls within the class's
-// own weekly cadence between its first and last recorded date, (2) the location
-// WAS in session that date (another class recorded), and (3) it is not a
-// scheduled holiday. This avoids flagging center-wide closures.
-function computeMissing(attendance, holidaySet){
+// A class is "missing" a date when the center was in session that day (another
+// class recorded), it is not a holiday, and either:
+//   (a) the class has some entries but skipped this date within its active window, or
+//   (b) the class is on the registration roster (active students) but never entered
+//       attendance at all — then every in-session date at that center is missing.
+function computeMissing(attendance, holidaySet, registration){
   const addD=(s,n)=>{const d=new Date(s+'T00:00:00Z');d.setUTCDate(d.getUTCDate()+n);return d.toISOString().slice(0,10);};
   const locDates={}; attendance.forEach(a=>{(locDates[a.loc]=locDates[a.loc]||new Set()).add(a.date);});
   const cls={}; attendance.forEach(a=>{const k=a.loc+'|'+a.grade+'|'+a.section;
@@ -247,8 +248,20 @@ function computeMissing(attendance, holidaySet){
     if(!mn) return;
     for(let d=mn; d<=mx; d=addD(d,7)){
       if(holidaySet.has(c.loc+'|'+d)) continue;
-      if(!c.dates.has(d) && locDates[c.loc].has(d)) gaps.push({loc:c.loc,grade:c.grade,section:c.section,date:d});
+      if(!c.dates.has(d) && locDates[c.loc]&&locDates[c.loc].has(d)) gaps.push({loc:c.loc,grade:c.grade,section:c.section,date:d});
     }
+  });
+  // Registered active classes with zero attendance entries
+  (registration||[]).forEach(r=>{
+    if(!(r.active>0)) return;
+    const k=r.loc+'|'+(r.grade||'')+'|'+(r.section||'');
+    if(cls[k]) return; // already covered above
+    const dates=locDates[r.loc];
+    if(!dates||!dates.size) return;
+    [...dates].sort().forEach(d=>{
+      if(holidaySet.has(r.loc+'|'+d)) return;
+      gaps.push({loc:r.loc,grade:r.grade||'',section:r.section||'',date:d});
+    });
   });
   return gaps;
 }
@@ -545,14 +558,20 @@ function buildMatrix(att, gaps){
   const missSet=new Set(gaps.map(g=>g.loc+'|'+g.grade+'|'+g.section+'|'+g.date));
   const classes={}; att.forEach(a=>{const k=a.loc+'|'+a.grade+'|'+a.section;
     (classes[k]=classes[k]||{loc:a.loc,grade:a.grade,section:a.section,dates:new Set()}).dates.add(a.date);});
+  // Include registered classes that never entered attendance (appear only in gaps)
+  gaps.forEach(g=>{const k=g.loc+'|'+g.grade+'|'+g.section;
+    if(!classes[k]) classes[k]={loc:g.loc,grade:g.grade,section:g.section,dates:new Set()};
+  });
   const allCls=Object.values(classes).sort((a,b)=>a.loc.localeCompare(b.loc)||
     (gradeOrder.indexOf(a.grade)-gradeOrder.indexOf(b.grade))||String(a.section).localeCompare(String(b.section)));
   const candidateDates=uniq([...att.map(a=>a.date),...gaps.map(g=>g.date)]);
   const ck=c=>c.loc+'|'+c.grade+'|'+c.section;
   const hasMiss=c=>gaps.some(g=>g.loc===c.loc&&g.grade===c.grade&&g.section===c.section);
   const hasHol=c=>{
-    const cd=[...c.dates].sort(); if(!cd.length) return false;
-    const mn=cd[0], mx=cd[cd.length-1];
+    const cd=[...c.dates].sort();
+    const spanDates=cd.length?cd:candidateDates.filter(d=>HOLIDAYS.has(c.loc+'|'+d)||missSet.has(ck(c)+'|'+d)||entered.has(ck(c)+'|'+d));
+    if(!spanDates.length) return false;
+    const mn=spanDates[0], mx=spanDates[spanDates.length-1];
     return [...HOLIDAYS].some(h=>{
       if(!h.startsWith(c.loc+'|')) return false;
       const d=h.slice(c.loc.length+1);
@@ -783,7 +802,7 @@ async function loadData(){
           attendance:payload.attendance||[],holidays:payload.holidays||[],
           duplicates:payload.duplicates||{available:false,students:0,extraEnrollments:0,uniqueStudents:0,details:[]}});
     HOLIDAYS=new Set(DATA.holidays);
-    MISSING=computeMissing(DATA.attendance, HOLIDAYS);
+    MISSING=computeMissing(DATA.attendance, HOLIDAYS, DATA.registration);
 
     // Prior year (same region) for KPI comparisons — years list is newest-first
     const years=CAT.years[sel.region]||[];
@@ -800,7 +819,7 @@ async function loadData(){
             DATA_PREV=scrubData({access:pp.access||[],registration:pp.registration||[],
               attendance:pp.attendance||[],holidays:pp.holidays||[],
               duplicates:pp.duplicates||{available:false,students:0,extraEnrollments:0,uniqueStudents:0,details:[]}});
-            MISSING_PREV=computeMissing(DATA_PREV.attendance, new Set(DATA_PREV.holidays));
+            MISSING_PREV=computeMissing(DATA_PREV.attendance, new Set(DATA_PREV.holidays), DATA_PREV.registration);
           }
         }
       }catch(_){ DATA_PREV=null; MISSING_PREV=[]; PREV_YEAR=null; }
