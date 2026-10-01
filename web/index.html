@@ -134,6 +134,34 @@
         <div class="tablewrap"><table id="atGradeLocTable"></table></div>
       </div>
     </div>
+    <div class="panel"><h3>Attendance detail by student</h3>
+      <div id="atLock" class="lockbox">
+        <p class="note" style="margin:0">This table contains personal information. Enter the password to view.</p>
+        <div class="lockrow">
+          <input type="password" id="atPass" placeholder="Password" autocomplete="off">
+          <button type="button" id="atUnlock">Unlock</button>
+        </div>
+        <div id="atLockErr" class="lockerr" hidden>Incorrect password</div>
+      </div>
+      <div id="atDetail" hidden>
+        <div class="detaill-filters">
+          <div><label>Center</label><select id="fAtDetLoc"><option value="ALL">All</option></select></div>
+          <div><label>Grade</label><select id="fAtDetGrade"><option value="ALL">All</option></select></div>
+        </div>
+        <div id="atDetailNote" class="note" style="margin-top:0;margin-bottom:10px"></div>
+        <div class="tablewrap"><table id="atStudentTable"></table></div>
+      </div>
+    </div>
+    <div id="atStuModal" class="modal" hidden>
+      <div class="modalbox" role="dialog" aria-modal="true" aria-labelledby="atStuModalTitle">
+        <div class="modalhead">
+          <h3 id="atStuModalTitle">Student attendance</h3>
+          <button type="button" class="modalclose" id="atStuModalClose" title="Close">×</button>
+        </div>
+        <div id="atStuModalNote" class="note" style="margin-top:0"></div>
+        <div class="tablewrap modaltable"><table id="atStuModalTable"></table></div>
+      </div>
+    </div>
     <div class="note">P = Present · A = Absent · T = Tardy · E = Excused · Unmarked = students on the roster left unmarked within an entered attendance entry. Present % excludes unmarked from the denominator. Entries never logged at all are tracked separately on the “Attendance Entry &amp; Missing” tab.</div>
   </section>
 
@@ -158,7 +186,7 @@
     </div>
     <div class="panel"><h3>Missing attendance entries (date · class with no entry)</h3>
       <div class="tablewrap"><table id="msTable"></table></div>
-      <div class="note">An entry is flagged when <b>no attendance was entered</b> for that class on a date the center was in session (another class recorded), excluding holidays. Classes with some entries are checked on their weekly cadence within their active window. <b>Registered classes with active students but zero entries</b> are also listed and marked missing for every in-session date at that center. Partial entries where some students were left unmarked are <b>not</b> counted here.</div>
+      <div class="note">An entry is flagged when <b>no attendance was entered</b> for that class on a date the center was in session (another class recorded), excluding holidays. Classes with some entries are checked on their weekly cadence within their active window. <b>Registered classes with active students but zero entries</b> are also listed and marked missing for every in-session date at that center. Partial entries where some students were left unmarked are <b>not</b> counted here. For centers where certain grades meet only on specific dates (e.g. STEP 11–12 at Dallas / Lewisville), add a <code>session_dates.csv</code> in the same year folder so other Saturdays are not treated as missing or absent.</div>
     </div>
   </section>
 </main>

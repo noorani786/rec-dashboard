@@ -129,6 +129,19 @@ table.mx tbody tr:hover td.rowlbl{background:var(--panel2)}
 .lockrow button{background:var(--accent);border:none;color:#fff;padding:8px 14px;border-radius:8px;cursor:pointer;font-weight:600;font-size:13px}
 .lockrow button:hover{filter:brightness(1.08)}
 .lockerr{color:var(--red);font-size:12px}
+.detaill-filters{display:flex;gap:12px;align-items:center;padding:0 0 12px;flex-wrap:wrap}
+.detaill-filters label{color:var(--muted);font-size:12px;margin-right:5px}
+.detaill-filters select{min-width:180px}
+.stu-link{background:none;border:none;padding:0;color:var(--accent);font:inherit;font-weight:600;cursor:pointer;text-align:left;text-decoration:underline;text-underline-offset:2px}
+.stu-link:hover{color:var(--accent2)}
+.modal{position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;padding:20px}
+.modal[hidden]{display:none!important}
+.modalbox{background:var(--panel);border:1px solid var(--line);border-radius:14px;width:min(720px,100%);max-height:min(80vh,640px);display:flex;flex-direction:column;padding:16px 18px;box-shadow:0 16px 48px rgba(0,0,0,.25)}
+.modalhead{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}
+.modalhead h3{margin:0;font-size:15px;font-weight:650;line-height:1.35;flex:1}
+.modalclose{background:var(--panel2);border:1px solid var(--line);color:var(--muted);width:32px;height:32px;border-radius:8px;cursor:pointer;font-size:20px;line-height:1;flex-shrink:0}
+.modalclose:hover{color:var(--txt);border-color:var(--accent)}
+.modaltable{max-height:420px;margin-top:8px}
 @media(max-width:700px){
   .brand{align-items:flex-start}
   .brand .logo{height:34px}

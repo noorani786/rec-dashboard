@@ -106,12 +106,21 @@ def classify(headers):
     h = set(headers)
     if {"TotalAccessHours", "AccessQ"} <= h:
         return "access"
+    # Per-student attendance marks (PersonID + date; not the daily class aggregate).
+    if "PersonID" in h and ("DateofClass1" in h or "DateofClass" in h):
+        if "M1" not in h and "TotalPosition" not in h:
+            return "attendance_student"
     if "DateofClass1" in h and "M1" in h:
         return "attendance"
     if {"StudentActive", "StudentInActive"} <= h:
         return "registration"
     if "Week ending" in h and "REC" in h:
         return "holidays"
+    # Grade-specific REC session dates (e.g. STEP 11–12 at Dallas / Lewisville).
+    if "REC" in h and "Grade" in h and (
+        "Date" in h or "Week ending" in h or "Session date" in h
+    ):
+        return "session_dates"
     # Student roster with PersonID (detail export); phone-only exports lack PersonID
     if "PersonID" in h and ("JamatiTitle" in h or "Grade" in h):
         return "contact"
@@ -155,6 +164,89 @@ def _dedupe_access(rows):
         b.pop("_seg", None)
         out.append(b)
     return out, len(dup_people)
+
+
+def _student_mark(row):
+    """Parse a single P/A/T/E/M mark from a student attendance row."""
+    for col in ("Mark", "Attendance", "AttCode", "AttendanceCode", "Status"):
+        v = (row.get(col) or "").strip().upper()
+        if v in ("P", "A", "T", "E", "M"):
+            return v
+        if v.startswith("PRESENT"):
+            return "P"
+        if v.startswith("ABSENT"):
+            return "A"
+        if "TARDY" in v:
+            return "T"
+        if "EXCUSED" in v:
+            return "E"
+        if "UNMARKED" in v:
+            return "M"
+    if _num(row.get("P")) == 1:
+        return "P"
+    if _num(row.get("A")) == 1:
+        return "A"
+    if _num(row.get("T")) == 1:
+        return "T"
+    if _num(row.get("E")) == 1:
+        return "E"
+    if _num(row.get("M")) == 1 or _num(row.get("M1")) == 1:
+        return "M"
+    return None
+
+
+def _build_session_index(entries):
+    """Map (pattern, grade) -> set of ISO dates. Pattern matches as substring of Location."""
+    idx = {}
+    for e in entries:
+        key = (e["pattern"], e["grade"])
+        idx.setdefault(key, set()).add(e["date"])
+    return idx
+
+
+def _session_day_allowed(idx, loc, grade, date):
+    """True/False if a grade-specific schedule applies; None if this class is unrestricted."""
+    grade = (grade or "").strip()
+    if not grade or not date:
+        return None
+    loc_l = (loc or "").lower()
+    dates = None
+    for (pattern, g), pattern_dates in idx.items():
+        if g != grade or pattern.lower() not in loc_l:
+            continue
+        dates = pattern_dates if dates is None else (dates | pattern_dates)
+    if dates is None:
+        return None
+    return date in dates
+
+
+def _aggregate_student_attendance(rows):
+    """Sum P/A/T/E/M marks per PersonID from student-level attendance rows."""
+    best = {}
+    for row in rows:
+        pid = row["id"]
+        if pid not in best:
+            best[pid] = {
+                "id": pid,
+                "name": row.get("name") or "",
+                "loc": row.get("loc") or "",
+                "grade": row.get("grade") or "",
+                "section": row.get("section") or "",
+                "P": 0, "A": 0, "T": 0, "E": 0, "M": 0,
+            }
+        b = best[pid]
+        if row.get("name"):
+            b["name"] = row["name"]
+        if row.get("loc"):
+            b["loc"] = row["loc"]
+        if row.get("grade"):
+            b["grade"] = row["grade"]
+        if row.get("section"):
+            b["section"] = row["section"]
+        mark = row.get("mark")
+        if mark in ("P", "A", "T", "E", "M"):
+            b[mark] += 1
+    return list(best.values())
 
 
 def _roster_duplicates(rows):
@@ -279,6 +371,10 @@ def build_payload(region=None, year=None):
         "registration": [],
         "attendance": [],
         "holidays": [],
+        "students": [],
+        "studentAttendance": [],
+        "studentAttendanceRecords": [],
+        "sessionSchedule": {"entries": []},
         "duplicates": {
             "students": 0,
             "extraEnrollments": 0,
@@ -340,22 +436,88 @@ def build_payload(region=None, year=None):
         data["registration"] = out
         note("registration", path, len(out))
 
+    session_entries = []
+    session_idx = {}
+
+    # SESSION DATES (optional — grade-specific REC days; substring match on REC column)
+    if "session_dates" in found:
+        path = found["session_dates"][0]
+        _, rows = _read_csv(path)
+        for x in rows:
+            pattern = (x.get("REC") or x.get("Center") or "").strip()
+            grade = (x.get("Grade") or "").strip()
+            if not pattern or not grade:
+                continue
+            raw = x.get("Date") or x.get("Week ending") or x.get("Session date")
+            dt = _parse_attendance_date(raw) or _parse_short_date(raw)
+            if not dt:
+                continue
+            session_entries.append({"pattern": pattern, "grade": grade, "date": dt})
+        session_idx = _build_session_index(session_entries)
+        data["sessionSchedule"] = {"entries": session_entries}
+        note("session_dates", path, len(session_entries))
+
     # ATTENDANCE (daily audit)
     if "attendance" in found:
         path = found["attendance"][0]
         _, rows = _read_csv(path)
-        out = [{
-            "loc": x.get("Location1", ""),
-            "cat": x.get("GradeCategory1", ""),
-            "grade": x.get("Grade1", ""),
-            "section": x.get("Section1", ""),
-            "date": _parse_attendance_date(x.get("DateofClass1")),
-            "P": _num(x.get("P")), "A": _num(x.get("A")),
-            "T": _num(x.get("T")), "E": _num(x.get("E")),
-            "M": _num(x.get("M1")), "total": _num(x.get("TotalPosition")),
-        } for x in rows if not _excluded_loc(x.get("Location1"))]
+        out = []
+        for x in rows:
+            if _excluded_loc(x.get("Location1")):
+                continue
+            loc = x.get("Location1", "")
+            grade = x.get("Grade1", "")
+            dt = _parse_attendance_date(x.get("DateofClass1"))
+            allowed = _session_day_allowed(session_idx, loc, grade, dt)
+            if allowed is False:
+                continue
+            out.append({
+                "loc": loc,
+                "cat": x.get("GradeCategory1", ""),
+                "grade": grade,
+                "section": x.get("Section1", ""),
+                "date": dt,
+                "P": _num(x.get("P")), "A": _num(x.get("A")),
+                "T": _num(x.get("T")), "E": _num(x.get("E")),
+                "M": _num(x.get("M1")), "total": _num(x.get("TotalPosition")),
+            })
         data["attendance"] = out
         note("attendance", path, len(out))
+
+    # STUDENT ATTENDANCE (optional — one row per student per date with a mark)
+    if "attendance_student" in found:
+        path = found["attendance_student"][0]
+        _, rows = _read_csv(path)
+        parsed = []
+        for x in rows:
+            loc = (x.get("Location") or x.get("Location1") or "").strip()
+            if _excluded_loc(loc):
+                continue
+            pid = (x.get("PersonID") or "").strip()
+            if not pid:
+                continue
+            mark = _student_mark(x)
+            if not mark:
+                continue
+            dt = _parse_attendance_date(
+                x.get("DateofClass1") or x.get("DateofClass") or x.get("Date")
+            )
+            grade = (x.get("Grade") or x.get("Grade1") or "").strip()
+            allowed = _session_day_allowed(session_idx, loc, grade, dt)
+            if allowed is False:
+                continue
+            parsed.append({
+                "id": pid,
+                "name": _person_name(x),
+                "loc": loc,
+                "grade": grade,
+                "section": (x.get("Section") or x.get("Section1") or "").strip(),
+                "date": dt,
+                "mark": mark,
+            })
+        data["studentAttendanceRecords"] = parsed
+        data["studentAttendance"] = _aggregate_student_attendance(parsed)
+        note("attendance_student", path, len(data["studentAttendance"]))
 
     # HOLIDAYS (loc|date pairs excluded from missing-attendance)
     if "holidays" in found:
@@ -376,22 +538,28 @@ def build_payload(region=None, year=None):
         path = found["contact"][0]
         _, rows = _read_csv(path)
         roster = []
+        students = []
         for x in rows:
             if _excluded_loc(x.get("Location")):
                 continue
             pid = (x.get("PersonID") or "").strip()
             if not pid:
                 continue
-            roster.append({
+            pos = (x.get("Position") or "").strip().lower()
+            entry = {
                 "id": pid,
                 "name": _person_name(x),
                 "loc": x.get("Location", ""),
                 "grade": x.get("Grade", ""),
                 "section": x.get("Section", ""),
-            })
+            }
+            roster.append(entry)
+            if pos == "student":
+                students.append(entry)
+        data["students"] = students
         data["duplicates"] = _roster_duplicates(roster)
         data["duplicates"]["available"] = True
-        note("contact", path, len(roster))
+        note("contact", path, len(students))
 
     data["meta"] = meta
     # note which expected types are missing

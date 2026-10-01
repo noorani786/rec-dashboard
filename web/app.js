@@ -139,6 +139,7 @@ const fmt = n => (n||0).toLocaleString();
 const pct = (a,b)=> b?Math.round(1000*a/b)/10:0;
 const uniq = (arr)=>[...new Set(arr)].sort();
 const pctLabel = v => v+'%';
+const esc = s => String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
 const gradeOrder=['PK','KG','01','02','03','04','05','06','07','08','09','10','11','12','Optional'];
 const catOrder=['Pre-Primary','Primary','STEP (7-10)','STEP (11-12)'];
 const GRADE_LEVELS=[
@@ -153,6 +154,8 @@ const DAYS=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 // Hardcoded gate for the Access detail-by-person table (personal info).
 const ACCESS_DETAIL_PASSWORD='rec-access';
 const ACCESS_DETAIL_KEY='recAccessDetailUnlocked';
+const ATTENDANCE_DETAIL_PASSWORD='rec-access';
+const ATTENDANCE_DETAIL_KEY='recAttDetailUnlocked';
 
 function gradeLevelOf(g){ return gradeToLevel[g]||null; }
 // Map CSV categories / grades onto Pre-Primary, Primary, STEP (7-10), STEP (11-12).
@@ -165,15 +168,19 @@ function sortCats(a,b){
 }
 
 // ---- module state, (re)assigned on every data load ----
-let DATA={access:[],registration:[],attendance:[],holidays:[],duplicates:{available:false,students:0,extraEnrollments:0,uniqueStudents:0,details:[]}};
+let DATA={access:[],registration:[],attendance:[],holidays:[],students:[],studentAttendance:[],studentAttendanceRecords:[],duplicates:{available:false,students:0,extraEnrollments:0,uniqueStudents:0,details:[]}};
 let DATA_PREV=null; // prior-year dataset for the same region, or null
 let HOLIDAYS=new Set(), MISSING=[];
 let MISSING_PREV=[];
 let PREV_YEAR=null;
 let ALL_GRADES=[];
+let STUDENT_RECORDS={};
+let SESSION={restricted:new Set(), byKey:new Map(), patterns:[]};
 const state={loc:'ALL', level:'ALL', grade:'ALL', matrix:null};
+const attDetailState={loc:'ALL', grade:'ALL'};
 
 const fLoc=document.getElementById('fLoc'), fLevel=document.getElementById('fLevel'), fGrade=document.getElementById('fGrade');
+const fAtDetLoc=document.getElementById('fAtDetLoc'), fAtDetGrade=document.getElementById('fAtDetGrade');
 
 function isExcludedLoc(l){
   const n=String(l||'').trim().toLowerCase();
@@ -190,6 +197,9 @@ function scrubData(d){
     access:(d.access||[]).filter(drop),
     registration:(d.registration||[]).filter(drop),
     attendance:(d.attendance||[]).filter(drop),
+    students:(d.students||[]).filter(drop),
+    studentAttendance:(d.studentAttendance||[]).filter(drop),
+    studentAttendanceRecords:(d.studentAttendanceRecords||[]).filter(drop),
     holidays:(d.holidays||[]).filter(h=>!isExcludedLoc(String(h).split('|')[0])),
     duplicates:(()=>{
       const dup=d.duplicates||{available:false,details:[]};
@@ -231,6 +241,212 @@ function dupStats(src){
 function dupF(){ return dupStats(DATA); }
 function dupPrev(){ return DATA_PREV?dupStats(DATA_PREV):null; }
 
+function initSessionSchedule(entries){
+  SESSION={restricted:new Set(), byKey:new Map(), patterns:[]};
+  (entries||[]).forEach(e=>{
+    if(!e||!e.pattern||!e.grade||!e.date) return;
+    const key=e.pattern+'|'+e.grade;
+    SESSION.restricted.add(key);
+    if(!SESSION.byKey.has(key)) SESSION.byKey.set(key,new Set());
+    SESSION.byKey.get(key).add(e.date);
+    if(!SESSION.patterns.includes(e.pattern)) SESSION.patterns.push(e.pattern);
+  });
+  SESSION.patterns.sort((a,b)=>b.length-a.length);
+}
+function locSessionPattern(loc){
+  const l=String(loc||'').toLowerCase();
+  for(const p of SESSION.patterns){
+    if(l.includes(p.toLowerCase())) return p;
+  }
+  return null;
+}
+function sessionSchedKey(loc, grade){
+  const p=locSessionPattern(loc);
+  return p?p+'|'+grade:null;
+}
+function hasSessionSchedule(loc, grade){
+  const k=sessionSchedKey(loc, grade);
+  return !!(k&&SESSION.restricted.has(k));
+}
+/** @returns {true|false|null} null = weekly schedule applies */
+function isSessionScheduledDay(loc, grade, date){
+  const k=sessionSchedKey(loc, grade);
+  if(!k||!SESSION.restricted.has(k)) return null;
+  return SESSION.byKey.get(k)?.has(date)??false;
+}
+function expectedSessionDates(loc, grade){
+  const k=sessionSchedKey(loc, grade);
+  if(!k||!SESSION.restricted.has(k)) return [];
+  return [...(SESSION.byKey.get(k)||[])].sort();
+}
+
+function classKey(r){ return (r.loc||'')+'|'+(r.grade||'')+'|'+(r.section||''); }
+function atDetLocOk(l){ return attDetailState.loc==='ALL'||l===attDetailState.loc; }
+function atDetGrOk(g){ return attDetailState.grade==='ALL'||g===attDetailState.grade; }
+function studentsDetF(){
+  return (DATA.students||[]).filter(s=>atDetLocOk(s.loc)&&atDetGrOk(s.grade));
+}
+function buildClassAttStats(att, gaps){
+  const m={};
+  att.forEach(a=>{
+    const k=classKey(a);
+    if(!m[k]) m[k]={P:0,A:0,T:0,E:0,M:0,entries:0,missing:0};
+    m[k].P+=a.P; m[k].A+=a.A; m[k].T+=a.T; m[k].E+=a.E; m[k].M+=a.M;
+    m[k].entries++;
+  });
+  gaps.forEach(g=>{
+    const k=classKey(g);
+    if(!m[k]) m[k]={P:0,A:0,T:0,E:0,M:0,entries:0,missing:0};
+    m[k].missing++;
+  });
+  return m;
+}
+function indexStudentRecords(){
+  STUDENT_RECORDS={};
+  (DATA.studentAttendanceRecords||[]).forEach(r=>{
+    (STUDENT_RECORDS[r.id]=STUDENT_RECORDS[r.id]||[]).push({date:r.date, mark:r.mark});
+  });
+  Object.values(STUDENT_RECORDS).forEach(arr=>arr.sort((a,b)=>String(a.date).localeCompare(String(b.date))));
+}
+function stuLink(student){
+  const name=student.name||student.id;
+  return `<button type="button" class="stu-link" data-stu-id="${esc(student.id)}">${esc(name)}</button>`;
+}
+function markBadge(m){
+  const labels={P:['Present','p-green'],A:['Absent','p-red'],T:['Tardy','p-amber'],E:['Excused','p-teal'],M:['Unmarked','p-grey']};
+  const pair=labels[m]||[m,'p-grey'];
+  return `<span class="pill ${pair[1]}">${pair[0]}</span>`;
+}
+function closeAttStudentModal(){
+  const modal=document.getElementById('atStuModal');
+  if(modal) modal.hidden=true;
+}
+function showStudentAttModal(studentId){
+  const student=(DATA.students||[]).find(s=>s.id===studentId);
+  if(!student) return;
+  const modal=document.getElementById('atStuModal');
+  const title=document.getElementById('atStuModalTitle');
+  const note=document.getElementById('atStuModalNote');
+  const locLabel=(student.loc||'').replace(' REC','');
+  const sec=student.section?('-'+student.section):'';
+  if(title) title.textContent=(student.name||student.id)+' · '+student.grade+sec+' · '+locLabel;
+  const records=STUDENT_RECORDS[studentId]||[];
+  if(records.length){
+    if(note) note.textContent='Individual attendance marks for this student. Sorted by date.';
+    bindTable(document.getElementById('atStuModalTable'),()=>{
+      const cols=[{t:'Date'},{t:'Mark'}];
+      const rows=records.map(r=>{
+        const row=[r.date, markBadge(r.mark)];
+        row._raw=[r.date,r.mark];
+        return row;
+      });
+      return [cols,rows];
+    });
+  } else {
+    if(note) note.textContent='Individual marks are not in the export. Showing class session records for this student\'s section (same for every student in the class).';
+    const ck=classKey(student);
+    const attRows=attF().filter(a=>classKey(a)===ck);
+    const attByDate={};
+    attRows.forEach(a=>{ attByDate[a.date]=a; });
+    const missDates=new Set(missF().filter(g=>classKey(g)===ck).map(g=>g.date));
+    const holDates=new Set([...HOLIDAYS].filter(h=>h.startsWith(student.loc+'|')).map(h=>h.slice(student.loc.length+1)));
+    const dates=hasSessionSchedule(student.loc, student.grade)
+      ? expectedSessionDates(student.loc, student.grade)
+      : uniq([...attRows.map(a=>a.date), ...missDates]).sort();
+    bindTable(document.getElementById('atStuModalTable'),()=>{
+      const cols=[{t:'Date'},{t:'Present',num:1},{t:'Absent',num:1},{t:'Tardy',num:1},{t:'Excused',num:1},{t:'Unmarked',num:1},{t:'Session'}];
+      const rows=dates.map(d=>{
+        if(holDates.has(d)){
+          const row=[d,'—','—','—','—','—','<span class="pill p-amber">Holiday</span>'];
+          row._raw=[d,0,0,0,0,0,0]; return row;
+        }
+        if(missDates.has(d)){
+          const row=[d,'—','—','—','—','—','<span class="pill p-red">No entry</span>'];
+          row._raw=[d,0,0,0,0,0,0]; return row;
+        }
+        const a=attByDate[d];
+        const mkd=a.P+a.A+a.T+a.E;
+        const pr=pct(a.P,mkd);
+        const prc=pr>=80?'p-green':pr>=65?'p-amber':'p-red';
+        const row=[d,a.P,a.A,a.T,a.E,a.M,`<span class="pill ${prc}">Entered · ${pr}% class</span>`];
+        row._raw=[d,a.P,a.A,a.T,a.E,a.M,pr];
+        return row;
+      });
+      if(!rows.length) return [cols,[['—','—','—','—','—','—','No class sessions in filter']]];
+      return [cols,rows];
+    });
+  }
+  document.getElementById('atStuModalTable')._sort={i:0,dir:1};
+  document.getElementById('atStuModalTable')._data();
+  if(modal) modal.hidden=false;
+}
+function populateAttDetailFilters(){
+  if(!fAtDetLoc||!fAtDetGrade) return;
+  const locs=uniq((DATA.students||[]).map(s=>s.loc).filter(Boolean)).sort();
+  const grades=uniq((DATA.students||[]).map(s=>s.grade).filter(Boolean))
+    .sort((a,b)=>{let ia=gradeOrder.indexOf(a),ib=gradeOrder.indexOf(b);return (ia<0?99:ia)-(ib<0?99:ib);});
+  fAtDetLoc.innerHTML='<option value="ALL">All</option>'+locs.map(v=>`<option>${v}</option>`).join('');
+  fAtDetGrade.innerHTML='<option value="ALL">All</option>'+grades.map(v=>`<option>${v}</option>`).join('');
+  fAtDetLoc.value=attDetailState.loc==='ALL'||locs.includes(attDetailState.loc)?attDetailState.loc:'ALL';
+  fAtDetGrade.value=attDetailState.grade==='ALL'||grades.includes(attDetailState.grade)?attDetailState.grade:'ALL';
+  attDetailState.loc=fAtDetLoc.value;
+  attDetailState.grade=fAtDetGrade.value;
+}
+function renderAttStudentTable(){
+  const hasMarks=(DATA.studentAttendance||[]).length>0;
+  const noteEl=document.getElementById('atDetailNote');
+  if(!(DATA.students||[]).length){
+    if(noteEl) noteEl.textContent='No student roster found. Add the contact information export to data/<region>/<year>/.';
+    bindTable(document.getElementById('atStudentTable'),()=>{
+      const cols=[{t:'Person'},{t:'Center'},{t:'Grade'},{t:'Section'}];
+      return [cols,[['—','—','—','Add the contact export to enable this table']]];
+    });
+    document.getElementById('atStudentTable')._data();
+    return;
+  }
+  if(noteEl){
+    noteEl.textContent=hasMarks
+      ? 'Individual attendance marks from the student attendance detail export. Click a name to view records by date.'
+      : 'Individual student marks are not in the daily attendance export. Class totals are shown below; click a name to view class session records for that student\'s section.';
+  }
+  const markById={};
+  (DATA.studentAttendance||[]).forEach(r=>{ markById[r.id]=r; });
+  const classStats=buildClassAttStats(attF(), missF());
+  const students=studentsDetF();
+  bindTable(document.getElementById('atStudentTable'),()=>{
+    if(hasMarks){
+      const cols=[{t:'Person'},{t:'Center'},{t:'Grade'},{t:'Section'},{t:'Present',num:1},{t:'Absent',num:1},{t:'Tardy',num:1},{t:'Excused',num:1},{t:'Unmarked',num:1},{t:'Present %',num:1}];
+      const rows=students.map(s=>{
+        const m=markById[s.id]||{P:0,A:0,T:0,E:0,M:0};
+        const mkd=m.P+m.A+m.T+m.E;
+        const pr=pct(m.P,mkd);
+        const prc=pr>=80?'p-green':pr>=65?'p-amber':'p-red';
+        const r=[stuLink(s),s.loc,s.grade,s.section||'—',m.P,m.A,m.T,m.E,m.M,`<span class="pill ${prc}">${pr}%</span>`];
+        r._raw=[s.name,s.loc,s.grade,s.section,m.P,m.A,m.T,m.E,m.M,pr];
+        return r;
+      });
+      if(!rows.length) return [cols,[['—','—','—','—','—','—','—','—','—','No students match filter']]];
+      return [cols,rows];
+    }
+    const cols=[{t:'Person'},{t:'Center'},{t:'Grade'},{t:'Section'},{t:'Entries logged',num:1},{t:'Missing entries',num:1},{t:'Class present %',num:1}];
+    const rows=students.map(s=>{
+      const cs=classStats[classKey(s)]||{entries:0,missing:0,P:0,A:0,T:0,E:0,M:0};
+      const mkd=cs.P+cs.A+cs.T+cs.E;
+      const pr=pct(cs.P,mkd);
+      const prc=pr>=80?'p-green':pr>=65?'p-amber':'p-red';
+      const gpc=cs.missing===0?'p-green':cs.missing<=5?'p-amber':'p-red';
+      const r=[stuLink(s),s.loc,s.grade,s.section||'—',cs.entries,`<span class="pill ${gpc}">${cs.missing}</span>`,`<span class="pill ${prc}">${pr}%</span>`];
+      r._raw=[s.name,s.loc,s.grade,s.section,cs.entries,cs.missing,pr];
+      return r;
+    });
+    if(!rows.length) return [cols,[['—','—','—','—','—','—','No students match filter']]];
+    return [cols,rows];
+  });
+  const sortCol=hasMarks?9:6;
+  document.getElementById('atStudentTable')._sort={i:sortCol,dir:-1};
+  document.getElementById('atStudentTable')._data();
+}
+
 // ---- Missing attendance = date/class combos with NO attendance entered ----
 // A class is "missing" a date when the center was in session that day (another
 // class recorded), it is not a holiday, and either:
@@ -244,6 +460,13 @@ function computeMissing(attendance, holidaySet, registration){
     (cls[k]=cls[k]||{loc:a.loc,grade:a.grade,section:a.section,dates:new Set()}).dates.add(a.date);});
   const gaps=[];
   Object.values(cls).forEach(c=>{
+    if(hasSessionSchedule(c.loc, c.grade)){
+      expectedSessionDates(c.loc, c.grade).forEach(d=>{
+        if(holidaySet.has(c.loc+'|'+d)) return;
+        if(!c.dates.has(d)) gaps.push({loc:c.loc,grade:c.grade,section:c.section,date:d});
+      });
+      return;
+    }
     const cd=[...c.dates].sort(); const mn=cd[0],mx=cd[cd.length-1];
     if(!mn) return;
     for(let d=mn; d<=mx; d=addD(d,7)){
@@ -256,11 +479,19 @@ function computeMissing(attendance, holidaySet, registration){
     if(!(r.active>0)) return;
     const k=r.loc+'|'+(r.grade||'')+'|'+(r.section||'');
     if(cls[k]) return; // already covered above
+    const grade=r.grade||'';
+    if(hasSessionSchedule(r.loc, grade)){
+      expectedSessionDates(r.loc, grade).forEach(d=>{
+        if(holidaySet.has(r.loc+'|'+d)) return;
+        gaps.push({loc:r.loc,grade,section:r.section||'',date:d});
+      });
+      return;
+    }
     const dates=locDates[r.loc];
     if(!dates||!dates.size) return;
     [...dates].sort().forEach(d=>{
       if(holidaySet.has(r.loc+'|'+d)) return;
-      gaps.push({loc:r.loc,grade:r.grade||'',section:r.section||'',date:d});
+      gaps.push({loc:r.loc,grade,section:r.section||'',date:d});
     });
   });
   return gaps;
@@ -540,6 +771,9 @@ function attendance(){
   });
   document.getElementById('atGradeLocTable')._sort={i:0,dir:1};
   document.getElementById('atGradeLocTable')._data();
+
+  syncAttDetailLock();
+  if(isAttDetailUnlocked()) renderAttStudentTable();
 }
 
 // ---- entry matrix: classes (rows) × dates (cols) ----
@@ -585,7 +819,10 @@ function buildMatrix(att, gaps){
   else if(state.matrix==='hol') clsList=allCls.filter(hasHol);
 
   const dates=candidateDates.filter(d=>clsList.some(c=>{
+    const sched=isSessionScheduledDay(c.loc, c.grade, d);
+    if(sched===false) return false;
     const key=ck(c)+'|'+d;
+    if(sched===true) return entered.has(key)||missSet.has(key);
     return entered.has(key)||missSet.has(key);
   }));
 
@@ -608,8 +845,10 @@ function buildMatrix(att, gaps){
     const cells=dates.map(d=>{const mo=d.slice(0,7);const isNew=mo!==seenMonth;seenMonth=mo;const b=isNew?' mon':'';
       const key=ck(c)+'|'+d;
       const isHol=HOLIDAYS.has(c.loc+'|'+d);
+      const sched=isSessionScheduledDay(c.loc, c.grade, d);
       let dot='';
-      if(entered.has(key)) dot='<span class="cd ok"></span>';
+      if(sched===false) dot='';
+      else if(entered.has(key)) dot='<span class="cd ok"></span>';
       else if(isHol) dot='<span class="cd hol" title="Holiday '+d+'"></span>';
       else if(missSet.has(key)) dot='<span class="cd miss" title="No attendance entered '+d+'"></span>';
       return `<td class="cell${b}">${dot}</td>`;}).join('');
@@ -731,6 +970,54 @@ document.getElementById('acUnlock').onclick=tryUnlockAccessDetail;
 document.getElementById('acPass').addEventListener('keydown',e=>{ if(e.key==='Enter') tryUnlockAccessDetail(); });
 syncAccessDetailLock();
 
+// ---- Attendance detail password gate ----
+function isAttDetailUnlocked(){
+  try{return sessionStorage.getItem(ATTENDANCE_DETAIL_KEY)==='1';}catch(_){return false;}
+}
+function setAttDetailUnlocked(on){
+  try{ if(on) sessionStorage.setItem(ATTENDANCE_DETAIL_KEY,'1'); else sessionStorage.removeItem(ATTENDANCE_DETAIL_KEY); }catch(_){}
+}
+function syncAttDetailLock(){
+  const unlocked=isAttDetailUnlocked();
+  const lock=document.getElementById('atLock');
+  const detail=document.getElementById('atDetail');
+  if(lock) lock.hidden=unlocked;
+  if(detail) detail.hidden=!unlocked;
+  const err=document.getElementById('atLockErr');
+  if(err && unlocked) err.hidden=true;
+}
+function tryUnlockAttDetail(){
+  const input=document.getElementById('atPass');
+  const err=document.getElementById('atLockErr');
+  if((input&&input.value)===ATTENDANCE_DETAIL_PASSWORD){
+    setAttDetailUnlocked(true);
+    if(input) input.value='';
+    if(err) err.hidden=true;
+    populateAttDetailFilters();
+    if(current==='attendance') attendance();
+    else syncAttDetailLock();
+  } else {
+    if(err) err.hidden=false;
+    if(input){ input.value=''; input.focus(); }
+  }
+}
+document.getElementById('atUnlock').onclick=tryUnlockAttDetail;
+document.getElementById('atPass').addEventListener('keydown',e=>{ if(e.key==='Enter') tryUnlockAttDetail(); });
+if(fAtDetLoc) fAtDetLoc.onchange=()=>{ attDetailState.loc=fAtDetLoc.value; if(current==='attendance') renderAttStudentTable(); };
+if(fAtDetGrade) fAtDetGrade.onchange=()=>{ attDetailState.grade=fAtDetGrade.value; if(current==='attendance') renderAttStudentTable(); };
+document.getElementById('atStudentTable').addEventListener('click',e=>{
+  const btn=e.target.closest('.stu-link');
+  if(btn) showStudentAttModal(btn.dataset.stuId);
+});
+document.getElementById('atStuModalClose').onclick=closeAttStudentModal;
+document.getElementById('atStuModal').addEventListener('click',e=>{
+  if(e.target.id==='atStuModal') closeAttStudentModal();
+});
+document.addEventListener('keydown',e=>{
+  if(e.key==='Escape') closeAttStudentModal();
+});
+syncAttDetailLock();
+
 // ---- data loading (region / year aware) ----
 const fRegion=document.getElementById('fRegion'), fYear=document.getElementById('fYear');
 let CAT={regions:[],years:{},files:{}};
@@ -800,7 +1087,12 @@ async function loadData(){
 
     DATA=scrubData({access:payload.access||[],registration:payload.registration||[],
           attendance:payload.attendance||[],holidays:payload.holidays||[],
+          students:payload.students||[],studentAttendance:payload.studentAttendance||[],
+          studentAttendanceRecords:payload.studentAttendanceRecords||[],
           duplicates:payload.duplicates||{available:false,students:0,extraEnrollments:0,uniqueStudents:0,details:[]}});
+    const sessionEntries=payload.sessionSchedule&&payload.sessionSchedule.entries;
+    initSessionSchedule(sessionEntries);
+    indexStudentRecords();
     HOLIDAYS=new Set(DATA.holidays);
     MISSING=computeMissing(DATA.attendance, HOLIDAYS, DATA.registration);
 
@@ -816,10 +1108,14 @@ async function loadData(){
         if(pres.ok){
           const pp=await pres.json();
           if(!pp.error){
+            initSessionSchedule(pp.sessionSchedule&&pp.sessionSchedule.entries);
             DATA_PREV=scrubData({access:pp.access||[],registration:pp.registration||[],
               attendance:pp.attendance||[],holidays:pp.holidays||[],
+              students:pp.students||[],studentAttendance:pp.studentAttendance||[],
+              studentAttendanceRecords:pp.studentAttendanceRecords||[],
               duplicates:pp.duplicates||{available:false,students:0,extraEnrollments:0,uniqueStudents:0,details:[]}});
             MISSING_PREV=computeMissing(DATA_PREV.attendance, new Set(DATA_PREV.holidays), DATA_PREV.registration);
+            initSessionSchedule(sessionEntries);
           }
         }
       }catch(_){ DATA_PREV=null; MISSING_PREV=[]; PREV_YEAR=null; }
@@ -831,6 +1127,7 @@ async function loadData(){
     fillSelect(fLoc,allLoc);
     state.loc=fLoc.value; state.level=fLevel.value;
     refreshGradeOptions();
+    populateAttDetailFilters();
     setStatus(meta);
 
     const present=['access','registration','attendance'].filter(k=>meta.files&&meta.files[k]);
