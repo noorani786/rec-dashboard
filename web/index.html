@@ -7,7 +7,7 @@
 <script>
 (function(){try{var t=localStorage.getItem('recDashboardTheme');if(t==='dark')document.documentElement.removeAttribute('data-theme');else document.documentElement.setAttribute('data-theme','light');}catch(e){document.documentElement.setAttribute('data-theme','light');}})();
 </script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="chart.umd.min.js"></script>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -119,9 +119,73 @@
   <!-- ATTENDANCE -->
   <section class="page" id="p-attendance">
     <div class="cards" id="atCards"></div>
+    <div class="panel" id="atComparePanel">
+      <h3>Compare attendance</h3>
+      <p class="note" style="margin-top:0">Build two slices (year, center, grade level and/or grade, date range) and compare side by side — e.g. STEP (11–12) this year vs last year, or grade 10 vs grade 11 over the same dates.</p>
+      <div class="cmp-grid">
+        <div class="cmp-series">
+          <div class="cmp-series-head"><span class="cmp-badge cmp-a">A</span><strong>Series A</strong></div>
+          <div class="cmp-fields">
+            <div><label>Year</label><select id="cmpAYear"></select></div>
+            <div><label>Center</label><select id="cmpALoc"><option value="ALL">All</option></select></div>
+            <div><label>Grade level</label><select id="cmpALevel">
+              <option value="ALL">All</option>
+              <option value="Pre-Primary">Pre-Primary (PK - KG)</option>
+              <option value="Primary">Primary (1st - 6th)</option>
+              <option value="STEP (7-10)">STEP (7-10)</option>
+              <option value="STEP (11-12)">STEP (11-12)</option>
+            </select></div>
+            <div><label>Grade</label><select id="cmpAGrade"></select></div>
+            <div><label>From</label><input type="date" id="cmpAFrom"></div>
+            <div><label>To</label><input type="date" id="cmpATo"></div>
+          </div>
+          <div class="cmp-presets">
+            <button type="button" class="cmppreset" data-cmp="A" data-preset="6w">Last 6 weeks</button>
+            <button type="button" class="cmppreset" data-cmp="A" data-preset="6s">Last 6 sessions</button>
+            <button type="button" class="cmppreset" data-cmp="A" data-preset="full">Full term</button>
+          </div>
+        </div>
+        <div class="cmp-series">
+          <div class="cmp-series-head"><span class="cmp-badge cmp-b">B</span><strong>Series B</strong></div>
+          <div class="cmp-fields">
+            <div><label>Year</label><select id="cmpBYear"></select></div>
+            <div><label>Center</label><select id="cmpBLoc"><option value="ALL">All</option></select></div>
+            <div><label>Grade level</label><select id="cmpBLevel">
+              <option value="ALL">All</option>
+              <option value="Pre-Primary">Pre-Primary (PK - KG)</option>
+              <option value="Primary">Primary (1st - 6th)</option>
+              <option value="STEP (7-10)">STEP (7-10)</option>
+              <option value="STEP (11-12)">STEP (11-12)</option>
+            </select></div>
+            <div><label>Grade</label><select id="cmpBGrade"></select></div>
+            <div><label>From</label><input type="date" id="cmpBFrom"></div>
+            <div><label>To</label><input type="date" id="cmpBTo"></div>
+          </div>
+          <div class="cmp-presets">
+            <button type="button" class="cmppreset" data-cmp="B" data-preset="6w">Last 6 weeks</button>
+            <button type="button" class="cmppreset" data-cmp="B" data-preset="6s">Last 6 sessions</button>
+            <button type="button" class="cmppreset" data-cmp="B" data-preset="full">Full term</button>
+          </div>
+        </div>
+      </div>
+      <div class="cmp-actions">
+        <button type="button" class="refresh" id="atCompareRun">Update comparison</button>
+        <span id="atCompareStatus" class="cmp-status"></span>
+      </div>
+      <div class="cmp-summary" id="atCompareSummary"></div>
+      <div class="grid2 cmp-charts">
+        <div class="cmp-chartpanel"><h3>Present &amp; absent %</h3><div class="chartbox"><canvas id="atCompareBar"></canvas></div></div>
+        <div class="cmp-chartpanel"><h3>Present % by session date (within range)</h3><div class="chartbox"><canvas id="atCompareTrend"></canvas></div><p class="note" style="margin:8px 0 0">One point per class session date in the range (aggregated across centers/sections in that slice). Hover for the full date.</p></div>
+      </div>
+      <div class="tablewrap"><table id="atCompareTable"></table></div>
+    </div>
     <div class="grid2">
       <div class="panel"><h3>Present % trend over term</h3><div class="chartbox"><canvas id="atTrend"></canvas></div></div>
       <div class="panel"><h3>Present % by grade</h3><div class="chartbox"><canvas id="atGrade"></canvas></div></div>
+    </div>
+    <div class="panel"><h3>Attendance by session</h3>
+      <p class="note" style="margin-top:0;margin-bottom:10px">One row per class session date in the selected dataset, summed across classes that match the Center / Grade filters above.</p>
+      <div class="tablewrap"><table id="atSessionTable"></table></div>
     </div>
     <div class="panel"><h3>Attendance by center</h3>
       <div class="tablewrap"><table id="atTable"></table></div>

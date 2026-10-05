@@ -24,7 +24,14 @@ function themeColors(){
   };
 }
 let C = themeColors();
-Chart.defaults.color = C.muted; Chart.defaults.borderColor = C.line; Chart.defaults.font.family='inherit';
+function chartLibOk(){ return typeof Chart!=='undefined'&&typeof Chart.prototype!=='undefined'; }
+function applyChartTheme(){
+  if(!chartLibOk()) return;
+  Chart.defaults.color = C.muted;
+  Chart.defaults.borderColor = C.line;
+  Chart.defaults.font.family='inherit';
+}
+applyChartTheme();
 
 const THEME_KEY='recDashboardTheme';
 function currentTheme(){ return document.documentElement.getAttribute('data-theme')==='light'?'light':'dark'; }
@@ -33,7 +40,7 @@ function applyTheme(theme){
   else document.documentElement.removeAttribute('data-theme');
   try{ localStorage.setItem(THEME_KEY, theme==='light'?'light':'dark'); }catch(_){}
   C=themeColors();
-  Chart.defaults.color=C.muted; Chart.defaults.borderColor=C.line;
+  applyChartTheme();
   const btn=document.getElementById('themeToggle');
   if(btn) btn.textContent=theme==='light'?'☾ Dark':'☀ Light';
 }
@@ -52,6 +59,7 @@ const charts = {};
 const valueLabels={
   id:'valueLabels',
   afterDatasetsDraw(chart){
+    try{
     const cfg=chart.options.plugins&&chart.options.plugins.valueLabels;
     if(cfg===false) return;
     const format=(typeof cfg==='object'&&typeof cfg.format==='function')
@@ -64,6 +72,7 @@ const valueLabels={
     chart.data.datasets.forEach((ds,di)=>{
       const meta=chart.getDatasetMeta(di); if(meta.hidden) return;
       meta.data.forEach((el,i)=>{
+        if(!el||typeof el.tooltipPosition!=='function') return;
         const v=ds.data[i]; if(v==null||v===''||v===0) return;
         const label=format(v);
         ctx.shadowColor='transparent'; ctx.shadowBlur=0;
@@ -116,13 +125,56 @@ const valueLabels={
       });
     });
     ctx.restore();
+    }catch(_){ /* never break chart draw */ }
   }
 };
+function setChartboxMessage(id, msg){
+  const canvas=document.getElementById(id);
+  if(!canvas) return;
+  const box=canvas.closest('.chartbox');
+  if(!box) return;
+  let el=box.querySelector('.chart-empty');
+  if(msg){
+    if(!el){ el=document.createElement('div'); el.className='chart-empty'; box.appendChild(el); }
+    el.textContent=msg;
+    canvas.style.visibility='hidden';
+  }else{
+    if(el) el.remove();
+    canvas.style.visibility='';
+  }
+}
+function queueChartResize(chart){
+  if(!chart) return;
+  requestAnimationFrame(()=>{
+    try{ chart.resize(); }catch(_){}
+    requestAnimationFrame(()=>{ try{ chart.resize(); }catch(_){} });
+  });
+}
+function resizeVisibleCharts(){
+  Object.values(charts).forEach(ch=>{
+    try{ ch.resize(); }catch(_){}
+  });
+}
 function mk(id,cfg){
-  if(charts[id])charts[id].destroy();
-  const type=cfg.type;
-  const horiz=cfg.options&&cfg.options.indexAxis==='y';
-  const opts=cfg.options||(cfg.options={});
+  if(!chartLibOk()){
+    setChartboxMessage(id, 'Chart library failed to load. Hard-refresh the page or check that chart.umd.min.js is served.');
+    return;
+  }
+  const canvas=document.getElementById(id);
+  if(!canvas) return;
+  if(charts[id]){ try{ charts[id].destroy(); }catch(_){ } delete charts[id]; }
+  const labels=cfg.data&&cfg.data.labels;
+  const emptyDs=!(cfg.data&&cfg.data.datasets&&cfg.data.datasets.some(ds=>(ds.data||[]).length));
+  if((Array.isArray(labels)&&!labels.length)||emptyDs){
+    setChartboxMessage(id, cfg._emptyMsg||'No data for the current filters.');
+    return;
+  }
+  setChartboxMessage(id, null);
+  const chartCfg=Object.assign({}, cfg);
+  delete chartCfg._emptyMsg;
+  const type=chartCfg.type;
+  const horiz=chartCfg.options&&chartCfg.options.indexAxis==='y';
+  const opts=chartCfg.options||(chartCfg.options={});
   opts.layout=opts.layout||{};
   opts.layout.padding=Object.assign(
     type==='bar'&&!horiz?{top:18}:{},
@@ -132,8 +184,16 @@ function mk(id,cfg){
   );
   opts.plugins=opts.plugins||{};
   if(opts.plugins.valueLabels===undefined) opts.plugins.valueLabels=true;
-  const plugins=[...(cfg.plugins||[]), valueLabels];
-  charts[id]=new Chart(document.getElementById(id), Object.assign({}, cfg, {plugins}));
+  const plugins=[...(chartCfg.plugins||[]), valueLabels];
+  try{
+    charts[id]=new Chart(canvas, Object.assign({}, chartCfg, {plugins}));
+    queueChartResize(charts[id]);
+  }catch(e){
+    setChartboxMessage(id, 'Could not render chart: '+e.message);
+  }
+}
+function scheduleCmpChartResize(){
+  requestAnimationFrame(resizeVisibleCharts);
 }
 const fmt = n => (n||0).toLocaleString();
 const pct = (a,b)=> b?Math.round(1000*a/b)/10:0;
@@ -710,6 +770,349 @@ function registration(){
   }
 }
 
+// ---- Attendance compare (cross-year / cross-grade / date range) ----
+let DATA_BY_YEAR={};
+
+function addDays(iso, n){
+  const d=new Date(iso+'T00:00:00Z');
+  d.setUTCDate(d.getUTCDate()+n);
+  return d.toISOString().slice(0,10);
+}
+function sortGrades(gs){
+  return [...gs].sort((a,b)=>{const ia=gradeOrder.indexOf(a),ib=gradeOrder.indexOf(b);return (ia<0?99:ia)-(ib<0?99:ib);});
+}
+function datasetFromPayload(payload){
+  const d=scrubData({
+    access:payload.access||[], registration:payload.registration||[],
+    attendance:payload.attendance||[], holidays:payload.holidays||[],
+    students:payload.students||[], studentAttendance:payload.studentAttendance||[],
+    studentAttendanceRecords:payload.studentAttendanceRecords||[],
+    duplicates:payload.duplicates||{available:false,details:[]},
+  });
+  const att=d.attendance||[];
+  const dates=uniq(att.map(a=>a.date).filter(Boolean)).sort();
+  return {
+    attendance:att,
+    grades:sortGrades(uniq(att.map(a=>a.grade).filter(Boolean))),
+    locs:uniq(att.map(a=>a.loc).filter(Boolean)).sort(),
+    dateMin:dates[0]||null,
+    dateMax:dates[dates.length-1]||null,
+  };
+}
+function cacheYearDataset(year, ds){
+  if(sel.region&&year) DATA_BY_YEAR[sel.region+'|'+year]=ds;
+}
+async function getYearDataset(year){
+  const region=sel.region;
+  if(!region||!year) return {attendance:[],grades:[],locs:[],dateMin:null,dateMax:null};
+  const key=region+'|'+year;
+  if(DATA_BY_YEAR[key]) return DATA_BY_YEAR[key];
+  if(year===sel.year&&DATA){
+    const att=DATA.attendance||[];
+    const dates=uniq(att.map(a=>a.date).filter(Boolean)).sort();
+    const ds={
+      attendance:att,
+      grades:sortGrades(uniq(att.map(a=>a.grade).filter(Boolean))),
+      locs:uniq(att.map(a=>a.loc).filter(Boolean)).sort(),
+      dateMin:dates[0]||null,
+      dateMax:dates[dates.length-1]||null,
+    };
+    cacheYearDataset(year, ds);
+    return ds;
+  }
+  const qs=`?region=${encodeURIComponent(region)}&year=${encodeURIComponent(year)}`;
+  const res=await fetch('/api/data'+qs,{cache:'no-store',credentials:'same-origin'});
+  if(!res.ok) throw new Error('Could not load '+year);
+  const payload=await res.json();
+  if(payload.error) throw new Error(payload.error);
+  const ds=datasetFromPayload(payload);
+  cacheYearDataset(year, ds);
+  return ds;
+}
+function readCmpConfig(series){
+  const y=document.getElementById('cmp'+series+'Year');
+  const loc=document.getElementById('cmp'+series+'Loc');
+  const level=document.getElementById('cmp'+series+'Level');
+  const grade=document.getElementById('cmp'+series+'Grade');
+  const from=document.getElementById('cmp'+series+'From');
+  const to=document.getElementById('cmp'+series+'To');
+  return {
+    series,
+    year:y?y.value:'',
+    loc:loc?loc.value:'ALL',
+    level:level?level.value:'ALL',
+    grade:grade?grade.value:'',
+    from:from?from.value:'',
+    to:to?to.value:'',
+  };
+}
+function cmpGradesForLevel(allGrades, level){
+  if(!level||level==='ALL') return allGrades;
+  return allGrades.filter(g=>gradeLevelOf(g)===level);
+}
+function cmpSliceConfigured(cfg){
+  const hasLevel=cfg.level&&cfg.level!=='ALL';
+  const hasGrade=cfg.grade&&cfg.grade!=='ALL'&&cfg.grade!=='—';
+  return hasLevel||hasGrade;
+}
+function normDate(d){
+  const s=String(d||'').trim();
+  if(!s) return '';
+  if(/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if(m) return m[3]+'-'+m[1].padStart(2,'0')+'-'+m[2].padStart(2,'0');
+  return s;
+}
+function filterAttSlice(att, cfg){
+  const from=normDate(cfg.from), to=normDate(cfg.to);
+  return (att||[]).filter(a=>{
+    const dt=normDate(a.date);
+    if(!dt) return false;
+    if(cfg.loc&&cfg.loc!=='ALL'&&a.loc!==cfg.loc) return false;
+    if(cfg.level&&cfg.level!=='ALL'&&gradeLevelOf(a.grade)!==cfg.level) return false;
+    if(cfg.grade&&cfg.grade!=='ALL'&&cfg.grade!=='—'&&a.grade!==cfg.grade) return false;
+    if(from&&dt<from) return false;
+    if(to&&dt>to) return false;
+    return true;
+  });
+}
+function summarizeAttSlice(rows){
+  let P=0,A=0,T=0,E=0,M=0;
+  rows.forEach(a=>{P+=a.P;A+=a.A;T+=a.T;E+=a.E;M+=a.M;});
+  const mkd=P+A+T+E;
+  const dates=uniq(rows.map(a=>a.date)).sort();
+  return {
+    P,A,T,E,M,mkd,entries:rows.length,sessions:dates.length,
+    present:pct(P,mkd), absent:pct(A,mkd), tardy:pct(T,mkd), excused:pct(E,mkd),
+    dateFrom:dates[0]||null, dateTo:dates[dates.length-1]||null,
+  };
+}
+function cmpSeriesTitle(cfg){
+  const loc=cfg.loc==='ALL'?'All centers':cfg.loc.replace(' REC','');
+  const parts=[cfg.year];
+  if(cfg.level&&cfg.level!=='ALL') parts.push(cfg.level);
+  if(cfg.grade&&cfg.grade!=='ALL'&&cfg.grade!=='—') parts.push('Grade '+cfg.grade);
+  else if(!cfg.level||cfg.level==='ALL') parts.push('All grades');
+  parts.push(loc);
+  return parts.join(' · ');
+}
+function cmpDateRangeLabel(cfg){
+  if(cfg.from&&cfg.to) return cfg.from+' → '+cfg.to;
+  if(cfg.from) return 'From '+cfg.from;
+  if(cfg.to) return 'Through '+cfg.to;
+  return 'All dates';
+}
+function sessionTrendPoints(rows){
+  const byDate=groupSum(rows.filter(a=>normDate(a.date)),a=>normDate(a.date),['P','A','T','E']);
+  return Object.keys(byDate).sort().map((d,i)=>{
+    const x=byDate[d];
+    const m=x.P+x.A+x.T+x.E;
+    return {i:i+1, date:d, pct:pct(x.P,m)};
+  });
+}
+function buildCompareTrendData(tA, tB){
+  const labels=uniq([...tA.map(p=>p.date), ...tB.map(p=>p.date)]).sort();
+  const mapPct=pts=>{
+    const m=new Map(pts.map(p=>[p.date,p.pct]));
+    return labels.map(d=>(m.has(d)?m.get(d):null));
+  };
+  return {labels, dataA:mapPct(tA), dataB:mapPct(tB)};
+}
+let lastCmpVM=null;
+let cmpFetchSeq=0;
+
+function paintCompareCharts(){
+  const vm=lastCmpVM;
+  if(!vm) return;
+  const {sA,sB,trend,trendLabels}=vm;
+  mk('atCompareBar',{_emptyMsg:'No compare data — click Update comparison.',type:'bar',data:{
+    labels:['Present %','Absent %','Tardy %','Excused %'],
+    datasets:[
+      {label:'Series A',data:[sA.present,sA.absent,sA.tardy,sA.excused],backgroundColor:C.accent},
+      {label:'Series B',data:[sB.present,sB.absent,sB.tardy,sB.excused],backgroundColor:C.accent2},
+    ]},
+    options:{responsive:true,maintainAspectRatio:false,scales:{y:{min:0,max:100}},plugins:{legend:{position:'bottom'},valueLabels:false}}});
+  if(trend.labels.length){
+    mk('atCompareTrend',{_emptyMsg:'No session dates in the selected range.',type:'line',data:{labels:trendLabels,datasets:[
+      {label:'Series A',data:trend.dataA,borderColor:C.accent,backgroundColor:C.chartFill,fill:false,tension:.25,borderWidth:2,pointRadius:4,pointHoverRadius:5,spanGaps:false},
+      {label:'Series B',data:trend.dataB,borderColor:C.accent2,backgroundColor:'transparent',fill:false,tension:.25,borderWidth:2,pointRadius:4,pointHoverRadius:5,spanGaps:false},
+    ]},options:{responsive:true,maintainAspectRatio:false,scales:{y:{min:0,max:100},x:{ticks:{maxRotation:45,minRotation:0,maxTicksLimit:12}}},plugins:{legend:{position:'bottom'},valueLabels:false,tooltip:{callbacks:{title:function(items){const i=items[0]&&items[0].dataIndex;return trend.labels[i]||'';}}}}}});
+  } else {
+    setChartboxMessage('atCompareTrend', 'No session dates in the selected range.');
+    if(charts.atCompareTrend){ try{ charts.atCompareTrend.destroy(); }catch(_){ } delete charts.atCompareTrend; }
+  }
+  scheduleCmpChartResize();
+}
+function fillCmpGradeSelect(el, grades, current){
+  if(!el) return;
+  const g=grades.length?grades:[];
+  el.innerHTML='<option value="ALL">All</option>'+(g.map(v=>`<option>${v}</option>`).join(''));
+  if(current==='ALL'||!g.length) el.value='ALL';
+  else el.value=g.includes(current)?current:'ALL';
+}
+async function refreshCmpSeriesOptions(series){
+  const cfg=readCmpConfig(series);
+  const ds=await getYearDataset(cfg.year);
+  const locEl=document.getElementById('cmp'+series+'Loc');
+  const grEl=document.getElementById('cmp'+series+'Grade');
+  if(locEl){
+    const cur=locEl.value;
+    fillSelect(locEl, ds.locs);
+    locEl.value=cur==='ALL'||ds.locs.includes(cur)?cur:'ALL';
+  }
+  if(grEl){
+    const cur=grEl.value;
+    const grades=cmpGradesForLevel(ds.grades, cfg.level);
+    fillCmpGradeSelect(grEl, grades, cur);
+  }
+}
+async function applyCmpPreset(series, preset){
+  const cfg=readCmpConfig(series);
+  const ds=await getYearDataset(cfg.year);
+  const rows=filterAttSlice(ds.attendance,{loc:cfg.loc, level:cfg.level, grade:cfg.grade, from:'', to:''});
+  const dates=uniq(rows.map(a=>normDate(a.date)).filter(Boolean)).sort();
+  const fromEl=document.getElementById('cmp'+series+'From');
+  const toEl=document.getElementById('cmp'+series+'To');
+  if(!dates.length||!fromEl||!toEl) return;
+  const to=dates[dates.length-1];
+  let from;
+  if(preset==='6w') from=addDays(to,-41);
+  else if(preset==='6s') from=dates[Math.max(0,dates.length-6)];
+  else from=dates[0];
+  fromEl.value=from;
+  toEl.value=to;
+}
+function populateAttCompareYears(){
+  const years=CAT.years[sel.region]||[];
+  const aEl=document.getElementById('cmpAYear');
+  const bEl=document.getElementById('cmpBYear');
+  if(!aEl||!bEl||!years.length) return;
+  fillPlain(aEl, years, sel.year);
+  const prev=PREV_YEAR||(years[1]||years[0]);
+  fillPlain(bEl, years, prev);
+}
+async function setupAttCompareDefaults(){
+  populateAttCompareYears();
+  const defLevel=(state.level&&state.level!=='ALL')?state.level:'ALL';
+  const defGrade=(state.grade&&state.grade!=='ALL')?state.grade:'ALL';
+  ['A','B'].forEach(s=>{
+    const lv=document.getElementById('cmp'+s+'Level');
+    if(lv) lv.value=defLevel;
+  });
+  await refreshCmpSeriesOptions('A');
+  await refreshCmpSeriesOptions('B');
+  const gA=document.getElementById('cmpAGrade');
+  const gB=document.getElementById('cmpBGrade');
+  if(gA&&defGrade!=='ALL'&&[...gA.options].some(o=>o.value===defGrade)) gA.value=defGrade;
+  if(gB&&defGrade!=='ALL'&&[...gB.options].some(o=>o.value===defGrade)) gB.value=defGrade;
+  if(!cmpSliceConfigured(readCmpConfig('A'))){
+    const fb=ALL_GRADES.includes('11')?'11':ALL_GRADES[0];
+    if(gA&&fb&&[...gA.options].some(o=>o.value===fb)) gA.value=fb;
+  }
+  if(!cmpSliceConfigured(readCmpConfig('B'))){
+    const fb=ALL_GRADES.includes('11')?'11':ALL_GRADES[0];
+    if(gB&&fb&&[...gB.options].some(o=>o.value===fb)) gB.value=fb;
+  }
+  await applyCmpPreset('A','6w');
+  await applyCmpPreset('B','6w');
+}
+function cmpDelta(a, b, opts={}){
+  if(a==null||b==null||Number.isNaN(a)||Number.isNaN(b)) return '—';
+  const d=Math.round((b-a)*10)/10;
+  if(d===0) return '0';
+  const good=opts.lowerIsBetter?d<0:d>0;
+  const cls=good?'yoy-up':'yoy-down';
+  const sign=d>0?'+':'';
+  return `<span class="${cls}">${sign}${d}${opts.pct?' pp':''}</span>`;
+}
+async function renderAttCompare(){
+  const status=document.getElementById('atCompareStatus');
+  const summaryEl=document.getElementById('atCompareSummary');
+  if(!status||!summaryEl) return;
+  const seq=++cmpFetchSeq;
+  status.textContent='Loading…';
+  try{
+    const cfgA=readCmpConfig('A');
+    const cfgB=readCmpConfig('B');
+    if(!cfgA.year||!cfgB.year) throw new Error('Choose a year for each series (reload if Year lists are empty).');
+    if(!cmpSliceConfigured(cfgA)||!cmpSliceConfigured(cfgB)) throw new Error('Pick grade level and/or grade for each series.');
+    const [dsA, dsB]=await Promise.all([getYearDataset(cfgA.year), getYearDataset(cfgB.year)]);
+    if(seq!==cmpFetchSeq) return;
+    const rowsA=filterAttSlice(dsA.attendance, cfgA);
+    const rowsB=filterAttSlice(dsB.attendance, cfgB);
+    const sA=summarizeAttSlice(rowsA);
+    const sB=summarizeAttSlice(rowsB);
+    const labelA=cmpSeriesTitle(cfgA);
+    const labelB=cmpSeriesTitle(cfgB);
+    const prcA=sA.present>=80?'p-green':sA.present>=65?'p-amber':'p-red';
+    const prcB=sB.present>=80?'p-green':sB.present>=65?'p-amber':'p-red';
+    summaryEl.innerHTML=
+      `<div class="card"><div class="tag"><span class="cmp-badge cmp-a">A</span> ${esc(labelA)}</div><div class="k">Present %</div><div class="v"><span class="pill ${prcA}">${sA.present}%</span></div><div class="d">${cmpDateRangeLabel(cfgA)} · ${fmt(sA.sessions)} session dates · ${fmt(sA.entries)} class entries</div></div>`+
+      `<div class="card"><div class="tag"><span class="cmp-badge cmp-b">B</span> ${esc(labelB)}</div><div class="k">Present %</div><div class="v"><span class="pill ${prcB}">${sB.present}%</span></div><div class="d">${cmpDateRangeLabel(cfgB)} · ${fmt(sB.sessions)} session dates · ${fmt(sB.entries)} class entries</div></div>`;
+    const tA=sessionTrendPoints(rowsA);
+    const tB=sessionTrendPoints(rowsB);
+    const trend=buildCompareTrendData(tA, tB);
+    const trendLabels=trend.labels.map(d=>{
+      const day=DAYS[new Date(d+'T12:00:00Z').getUTCDay()];
+      return d.slice(5).replace('-','/')+' '+day;
+    });
+    lastCmpVM={sA,sB,trend,trendLabels,cfgA,cfgB,rowsA,rowsB};
+    paintCompareCharts();
+    bindTable(document.getElementById('atCompareTable'),()=>{
+      const cols=[{t:'Metric'},{t:'Series A',num:1},{t:'Series B',num:1},{t:'B − A',num:1}];
+      const mkRow=(name,a,b,delta,rawDelta)=>{
+        const row=[name,a,b,delta];
+        row._raw=[name,rawDelta??0]; return row;
+      };
+      return [cols,[
+        mkRow('Present %',sA.present+'%',sB.present+'%',cmpDelta(sA.present,sB.present,{pct:1}),sB.present-sA.present),
+        mkRow('Absent %',sA.absent+'%',sB.absent+'%',cmpDelta(sA.absent,sB.absent,{pct:1,lowerIsBetter:1}),sA.absent-sB.absent),
+        mkRow('Present (count)',fmt(sA.P),fmt(sB.P),cmpDelta(sA.P,sB.P),sB.P-sA.P),
+        mkRow('Absent (count)',fmt(sA.A),fmt(sB.A),cmpDelta(sA.A,sB.A,{lowerIsBetter:1}),sA.A-sB.A),
+        mkRow('Tardy (count)',fmt(sA.T),fmt(sB.T),cmpDelta(sA.T,sB.T,{lowerIsBetter:1}),sA.T-sB.T),
+        mkRow('Excused (count)',fmt(sA.E),fmt(sB.E),cmpDelta(sA.E,sB.E,{lowerIsBetter:1}),sA.E-sB.E),
+        mkRow('Unmarked (count)',fmt(sA.M),fmt(sB.M),cmpDelta(sA.M,sB.M,{lowerIsBetter:1}),sA.M-sB.M),
+        mkRow('Session dates in range',fmt(sA.sessions),fmt(sB.sessions),cmpDelta(sA.sessions,sB.sessions),sB.sessions-sA.sessions),
+        mkRow('Class entries in range',fmt(sA.entries),fmt(sB.entries),cmpDelta(sA.entries,sB.entries),sB.entries-sA.entries),
+      ]];
+    });
+    document.getElementById('atCompareTable')._sort={i:0,dir:1};
+    document.getElementById('atCompareTable')._data();
+    if(!rowsA.length&&!rowsB.length) status.textContent='No attendance rows match these filters.';
+    else if(!rowsA.length) status.textContent='Series A has no rows in this range.';
+    else if(!rowsB.length) status.textContent='Series B has no rows in this range.';
+    else if(!trend.labels.length) status.textContent='No session dates in range — widen From/To or check grade and year.';
+    else status.textContent='';
+  }catch(e){
+    status.textContent=e.message||String(e);
+    summaryEl.innerHTML='';
+  }
+}
+let attCompareBound=false;
+function bindAttCompare(){
+  if(attCompareBound) return;
+  attCompareBound=true;
+  document.getElementById('atCompareRun')?.addEventListener('click',()=>{ void renderAttCompare(); });
+  ['A','B'].forEach(s=>{
+    document.getElementById('cmp'+s+'Year')?.addEventListener('change',()=>{
+      void refreshCmpSeriesOptions(s).then(()=>renderAttCompare());
+    });
+    document.getElementById('cmp'+s+'Loc')?.addEventListener('change',()=>{ void renderAttCompare(); });
+    document.getElementById('cmp'+s+'Level')?.addEventListener('change',()=>{
+      void refreshCmpSeriesOptions(s).then(()=>renderAttCompare());
+    });
+    document.getElementById('cmp'+s+'Grade')?.addEventListener('change',()=>{ void renderAttCompare(); });
+    document.getElementById('cmp'+s+'From')?.addEventListener('change',()=>{ void renderAttCompare(); });
+    document.getElementById('cmp'+s+'To')?.addEventListener('change',()=>{ void renderAttCompare(); });
+  });
+  document.querySelectorAll('.cmppreset').forEach(btn=>{
+    btn.addEventListener('click',()=>{
+      const s=btn.dataset.cmp;
+      void applyCmpPreset(s, btn.dataset.preset).then(()=>renderAttCompare());
+    });
+  });
+}
+
 // =================== ATTENDANCE ===================
 function attendance(){
   const att=attF(), attP=attPrev();
@@ -726,12 +1129,34 @@ function attendance(){
   ]);
   const byDate=groupSum(att,a=>a.date,['P','A','T','E']);
   const dates=Object.keys(byDate).sort();
-  mk('atTrend',{type:'line',data:{labels:dates,datasets:[{label:'Present %',data:dates.map(d=>{const x=byDate[d];return pct(x.P,x.P+x.A+x.T+x.E);}),borderColor:C.green,backgroundColor:C.chartFill,fill:true,tension:.3,pointRadius:0}]},
+  mk('atTrend',{_emptyMsg:'No attendance entries for the current Center / Grade filters.',type:'line',data:{labels:dates,datasets:[{label:'Present %',data:dates.map(d=>{const x=byDate[d];return pct(x.P,x.P+x.A+x.T+x.E);}),borderColor:C.green,backgroundColor:C.chartFill,fill:true,tension:.3,pointRadius:0}]},
     options:{responsive:true,maintainAspectRatio:false,scales:{y:{min:0,max:100},x:{ticks:{maxTicksLimit:8}}},plugins:{legend:{display:false},valueLabels:{format:pctLabel}}}});
   const byGr=groupSum(att,a=>a.grade,['P','A','T','E']);
   const grs=Object.keys(byGr).sort((a,b)=>{let ia=gradeOrder.indexOf(a),ib=gradeOrder.indexOf(b);return (ia<0?99:ia)-(ib<0?99:ib);});
-  mk('atGrade',{type:'bar',data:{labels:grs,datasets:[{label:'Present %',data:grs.map(g=>{const x=byGr[g];return pct(x.P,x.P+x.A+x.T+x.E);}),backgroundColor:C.teal}]},
+  mk('atGrade',{_emptyMsg:'No attendance entries for the current Center / Grade filters.',type:'bar',data:{labels:grs,datasets:[{label:'Present %',data:grs.map(g=>{const x=byGr[g];return pct(x.P,x.P+x.A+x.T+x.E);}),backgroundColor:C.teal}]},
     options:{responsive:true,maintainAspectRatio:false,scales:{y:{min:0,max:100}},plugins:{legend:{display:false},valueLabels:{format:pctLabel}}}});
+  scheduleCmpChartResize();
+  bindTable(document.getElementById('atSessionTable'),()=>{
+    const cols=[{t:'Date'},{t:'Day'},{t:'Class entries',num:1},{t:'Present',num:1},{t:'Absent',num:1},{t:'Tardy',num:1},{t:'Excused',num:1},{t:'Unmarked',num:1},{t:'Present %',num:1}];
+    const byDate=groupSum(att.filter(a=>normDate(a.date)),a=>normDate(a.date),['P','A','T','E','M']);
+    const entriesByDate={};
+    att.forEach(a=>{const d=normDate(a.date); if(d) entriesByDate[d]=(entriesByDate[d]||0)+1;});
+    const rows=Object.keys(byDate).sort().map(d=>{
+      const x=byDate[d];
+      const m=x.P+x.A+x.T+x.E;
+      const pr=pct(x.P,m);
+      const prc=pr>=80?'p-green':pr>=65?'p-amber':'p-red';
+      const day=DAYS[new Date(d+'T12:00:00Z').getUTCDay()];
+      const r=[d,day,entriesByDate[d]||0,x.P,x.A,x.T,x.E,x.M,`<span class="pill ${prc}">${pr}%</span>`];
+      r._raw=[d,day,entriesByDate[d]||0,x.P,x.A,x.T,x.E,x.M,pr];
+      return r;
+    });
+    if(!rows.length) return [cols,[['—','—','—','—','—','—','—','—','No sessions match filter']]];
+    return [cols,rows];
+  });
+  document.getElementById('atSessionTable')._sort={i:0,dir:1};
+  document.getElementById('atSessionTable')._data();
+
   bindTable(document.getElementById('atTable'),()=>{
     const cols=[{t:'Center'},{t:'Present',num:1},{t:'Absent',num:1},{t:'Tardy',num:1},{t:'Excused',num:1},{t:'Unmarked',num:1},{t:'Present %',num:1}];
     const byLoc=groupSum(att,a=>a.loc,['P','A','T','E','M']);
@@ -774,6 +1199,9 @@ function attendance(){
 
   syncAttDetailLock();
   if(isAttDetailUnlocked()) renderAttStudentTable();
+  bindAttCompare();
+  if(lastCmpVM) paintCompareCharts();
+  void renderAttCompare();
 }
 
 // ---- entry matrix: classes (rows) × dates (cols) ----
@@ -908,12 +1336,20 @@ function missing(){
 // ---- routing ----
 const pages={overview,access,registration,attendance,missing};
 let current='overview';
-function render(){ pages[current](); }
+function render(){
+  pages[current]();
+  requestAnimationFrame(resizeVisibleCharts);
+}
 document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
   document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
   document.querySelectorAll('.page').forEach(x=>x.classList.remove('active'));
   t.classList.add('active'); document.getElementById('p-'+t.dataset.p).classList.add('active');
   current=t.dataset.p; render();
+  if(current==='attendance'){
+    if(lastCmpVM) paintCompareCharts();
+    else void renderAttCompare();
+    scheduleCmpChartResize();
+  }
 });
 fLoc.onchange=()=>{state.loc=fLoc.value; render();};
 fLevel.onchange=()=>{
@@ -1073,9 +1509,13 @@ function showBanner(msg,isErr){
 async function loadData(){
   const btn=document.getElementById('refresh');
   btn.disabled=true; btn.textContent='↻ Loading…';
+  DATA_BY_YEAR={};
+  if(!chartLibOk()){
+    showBanner('Chart.js did not load. Open the dashboard via <b>python3 serve.py</b> (not the HTML file directly) and hard-refresh.', true);
+  }
   try{
     const qs=(sel.region&&sel.year)?`?region=${encodeURIComponent(sel.region)}&year=${encodeURIComponent(sel.year)}`:'';
-    const res=await fetch('/api/data'+qs,{cache:'no-store'});
+    const res=await fetch('/api/data'+qs,{cache:'no-store',credentials:'same-origin'});
     if(!res.ok) throw new Error('server returned '+res.status);
     const payload=await res.json();
     if(payload.error) throw new Error(payload.error);
@@ -1104,7 +1544,7 @@ async function loadData(){
     if(PREV_YEAR){
       try{
         const pqs=`?region=${encodeURIComponent(sel.region)}&year=${encodeURIComponent(PREV_YEAR)}`;
-        const pres=await fetch('/api/data'+pqs,{cache:'no-store'});
+        const pres=await fetch('/api/data'+pqs,{cache:'no-store',credentials:'same-origin'});
         if(pres.ok){
           const pp=await pres.json();
           if(!pp.error){
@@ -1128,6 +1568,16 @@ async function loadData(){
     state.loc=fLoc.value; state.level=fLevel.value;
     refreshGradeOptions();
     populateAttDetailFilters();
+    cacheYearDataset(sel.year, {
+      attendance:DATA.attendance,
+      grades:ALL_GRADES,
+      locs:allLoc,
+      dateMin:uniq(DATA.attendance.map(a=>a.date)).sort()[0]||null,
+      dateMax:uniq(DATA.attendance.map(a=>a.date)).sort().slice(-1)[0]||null,
+    });
+    bindAttCompare();
+    await setupAttCompareDefaults();
+    if(current==='attendance') void renderAttCompare();
     setStatus(meta);
 
     const present=['access','registration','attendance'].filter(k=>meta.files&&meta.files[k]);
