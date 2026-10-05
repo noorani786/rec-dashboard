@@ -554,7 +554,8 @@ function computeMissing(attendance, holidaySet, registration){
       gaps.push({loc:r.loc,grade,section:r.section||'',date:d});
     });
   });
-  return gaps;
+  const today=todayLocalISO();
+  return gaps.filter(g=>normDate(g.date)<=today);
 }
 
 // KPI cards with optional prior-year comparison line
@@ -862,6 +863,10 @@ function normDate(d){
   const m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
   if(m) return m[3]+'-'+m[1].padStart(2,'0')+'-'+m[2].padStart(2,'0');
   return s;
+}
+function todayLocalISO(){
+  const d=new Date();
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
 }
 function filterAttSlice(att, cfg){
   const from=normDate(cfg.from), to=normDate(cfg.to);
