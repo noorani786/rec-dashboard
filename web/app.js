@@ -313,31 +313,75 @@ function initSessionSchedule(entries){
   });
   SESSION.patterns.sort((a,b)=>b.length-a.length);
 }
+function normLocSession(loc){
+  return String(loc||'').toLowerCase().replace(/-/g,' ').replace(/\s+/g,' ').trim();
+}
 function locSessionPattern(loc){
-  const l=String(loc||'').toLowerCase();
+  const l=normLocSession(loc);
   for(const p of SESSION.patterns){
-    if(l.includes(p.toLowerCase())) return p;
+    if(l.includes(normLocSession(p))) return p;
   }
   return null;
 }
-function sessionSchedKey(loc, grade){
-  const p=locSessionPattern(loc);
-  return p?p+'|'+grade:null;
+function normGradeNum(grade){
+  const g=String(grade||'').trim();
+  return /^\d+$/.test(g)?String(parseInt(g,10)):g;
 }
-function hasSessionSchedule(loc, grade){
-  const k=sessionSchedKey(loc, grade);
-  return !!(k&&SESSION.restricted.has(k));
+function parseSessionGradeTokens(spec){
+  const s=String(spec||'').trim();
+  if(!s) return [];
+  const compact=s.replace(/\s+/g,'').toLowerCase();
+  if(compact==='11th&12th'||compact==='11&12') return [['11',null],['12',null]];
+  const tokens=[];
+  s.split(',').forEach(part=>{
+    part=part.trim();
+    if(!part) return;
+    if(/11.*&.*12/i.test(part)){ tokens.push(['11',null],['12',null]); return; }
+    const m=part.match(/^(\d+)\s*([AB])?$/i);
+    if(m){
+      const sec=(m[2]||'').toUpperCase()||null;
+      tokens.push([String(parseInt(m[1],10)), sec]);
+      return;
+    }
+  });
+  return tokens;
+}
+function classMatchesSessionGrade(grade, section, spec){
+  const gradeN=normGradeNum(grade);
+  if(!gradeN) return false;
+  const sec=String(section||'').trim().toUpperCase()||null;
+  return parseSessionGradeTokens(spec).some(([g, reqSec])=>{
+    if(g!==gradeN) return false;
+    return reqSec==null||(sec&&reqSec===sec);
+  });
+}
+function sessionSchedKeysForClass(loc, grade, section){
+  const p=locSessionPattern(loc);
+  if(!p) return [];
+  const prefix=p+'|';
+  const keys=[];
+  for(const key of SESSION.restricted){
+    if(!key.startsWith(prefix)) continue;
+    const spec=key.slice(prefix.length);
+    if(classMatchesSessionGrade(grade, section, spec)) keys.push(key);
+  }
+  return keys;
+}
+function hasSessionSchedule(loc, grade, section){
+  return sessionSchedKeysForClass(loc, grade, section).length>0;
 }
 /** @returns {true|false|null} null = weekly schedule applies */
-function isSessionScheduledDay(loc, grade, date){
-  const k=sessionSchedKey(loc, grade);
-  if(!k||!SESSION.restricted.has(k)) return null;
-  return SESSION.byKey.get(k)?.has(date)??false;
+function isSessionScheduledDay(loc, grade, section, date){
+  const keys=sessionSchedKeysForClass(loc, grade, section);
+  if(!keys.length) return null;
+  return keys.some(k=>SESSION.byKey.get(k)?.has(date));
 }
-function expectedSessionDates(loc, grade){
-  const k=sessionSchedKey(loc, grade);
-  if(!k||!SESSION.restricted.has(k)) return [];
-  return [...(SESSION.byKey.get(k)||[])].sort();
+function expectedSessionDates(loc, grade, section){
+  const dates=new Set();
+  sessionSchedKeysForClass(loc, grade, section).forEach(k=>{
+    (SESSION.byKey.get(k)||[]).forEach(d=>dates.add(d));
+  });
+  return [...dates].sort();
 }
 
 function classKey(r){ return (r.loc||'')+'|'+(r.grade||'')+'|'+(r.section||''); }
@@ -410,8 +454,8 @@ function showStudentAttModal(studentId){
     attRows.forEach(a=>{ attByDate[a.date]=a; });
     const missDates=new Set(missF().filter(g=>classKey(g)===ck).map(g=>g.date));
     const holDates=new Set([...HOLIDAYS].filter(h=>h.startsWith(student.loc+'|')).map(h=>h.slice(student.loc.length+1)));
-    const dates=hasSessionSchedule(student.loc, student.grade)
-      ? expectedSessionDates(student.loc, student.grade)
+    const dates=hasSessionSchedule(student.loc, student.grade, student.section)
+      ? expectedSessionDates(student.loc, student.grade, student.section)
       : uniq([...attRows.map(a=>a.date), ...missDates]).sort();
     bindTable(document.getElementById('atStuModalTable'),()=>{
       const cols=[{t:'Date'},{t:'Present',num:1},{t:'Absent',num:1},{t:'Tardy',num:1},{t:'Excused',num:1},{t:'Unmarked',num:1},{t:'Session'}];
@@ -520,8 +564,8 @@ function computeMissing(attendance, holidaySet, registration){
     (cls[k]=cls[k]||{loc:a.loc,grade:a.grade,section:a.section,dates:new Set()}).dates.add(a.date);});
   const gaps=[];
   Object.values(cls).forEach(c=>{
-    if(hasSessionSchedule(c.loc, c.grade)){
-      expectedSessionDates(c.loc, c.grade).forEach(d=>{
+    if(hasSessionSchedule(c.loc, c.grade, c.section)){
+      expectedSessionDates(c.loc, c.grade, c.section).forEach(d=>{
         if(holidaySet.has(c.loc+'|'+d)) return;
         if(!c.dates.has(d)) gaps.push({loc:c.loc,grade:c.grade,section:c.section,date:d});
       });
@@ -540,8 +584,8 @@ function computeMissing(attendance, holidaySet, registration){
     const k=r.loc+'|'+(r.grade||'')+'|'+(r.section||'');
     if(cls[k]) return; // already covered above
     const grade=r.grade||'';
-    if(hasSessionSchedule(r.loc, grade)){
-      expectedSessionDates(r.loc, grade).forEach(d=>{
+    if(hasSessionSchedule(r.loc, grade, r.section)){
+      expectedSessionDates(r.loc, grade, r.section).forEach(d=>{
         if(holidaySet.has(r.loc+'|'+d)) return;
         gaps.push({loc:r.loc,grade,section:r.section||'',date:d});
       });
@@ -1252,7 +1296,7 @@ function buildMatrix(att, gaps){
   else if(state.matrix==='hol') clsList=allCls.filter(hasHol);
 
   const dates=candidateDates.filter(d=>clsList.some(c=>{
-    const sched=isSessionScheduledDay(c.loc, c.grade, d);
+    const sched=isSessionScheduledDay(c.loc, c.grade, c.section, d);
     if(sched===false) return false;
     const key=ck(c)+'|'+d;
     if(sched===true) return entered.has(key)||missSet.has(key);
@@ -1278,7 +1322,7 @@ function buildMatrix(att, gaps){
     const cells=dates.map(d=>{const mo=d.slice(0,7);const isNew=mo!==seenMonth;seenMonth=mo;const b=isNew?' mon':'';
       const key=ck(c)+'|'+d;
       const isHol=HOLIDAYS.has(c.loc+'|'+d);
-      const sched=isSessionScheduledDay(c.loc, c.grade, d);
+      const sched=isSessionScheduledDay(c.loc, c.grade, c.section, d);
       let dot='';
       if(sched===false) dot='';
       else if(entered.has(key)) dot='<span class="cd ok"></span>';

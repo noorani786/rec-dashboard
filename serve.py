@@ -28,7 +28,7 @@ For a public VPS deploy, bind to localhost and put nginx in front
 
 Requires only the Python 3 standard library.
 """
-import base64, csv, datetime, io, json, os, secrets, sys, webbrowser
+import base64, csv, datetime, io, json, os, re, secrets, sys, webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -195,8 +195,62 @@ def _student_mark(row):
     return None
 
 
+def _normalize_grade_num(grade):
+    g = (grade or "").strip()
+    if g.isdigit():
+        return str(int(g))
+    return g
+
+
+def _normalize_loc_session(loc):
+    return re.sub(r"\s+", " ", (loc or "").lower().replace("-", " ")).strip()
+
+
+def _loc_matches_session_pattern(loc, pattern):
+    loc_n = _normalize_loc_session(loc)
+    pat_n = _normalize_loc_session(pattern)
+    return bool(pat_n and pat_n in loc_n)
+
+
+def _parse_session_grade_tokens(spec):
+    """Tokens from session_dates Grade column (e.g. 7A, 9 or 11th & 12th)."""
+    spec = (spec or "").strip()
+    if not spec:
+        return []
+    compact = re.sub(r"\s+", "", spec.lower())
+    if compact in ("11th&12th", "11&12"):
+        return [("11", None), ("12", None)]
+    tokens = []
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if re.search(r"11.*&.*12", part, re.I):
+            tokens.extend([("11", None), ("12", None)])
+            continue
+        m = re.match(r"^(\d+)\s*([AB])?$", part, re.I)
+        if m:
+            sec = (m.group(2) or "").upper() or None
+            tokens.append((str(int(m.group(1))), sec))
+            continue
+    return tokens
+
+
+def _class_matches_session_grade(grade, section, spec):
+    grade_n = _normalize_grade_num(grade)
+    if not grade_n:
+        return False
+    sec = (section or "").strip().upper() or None
+    for g, req_sec in _parse_session_grade_tokens(spec):
+        if g != grade_n:
+            continue
+        if req_sec is None or (sec and req_sec == sec):
+            return True
+    return False
+
+
 def _build_session_index(entries):
-    """Map (pattern, grade) -> set of ISO dates. Pattern matches as substring of Location."""
+    """Map (pattern, grade spec) -> set of ISO dates. Pattern matches REC / Location."""
     idx = {}
     for e in entries:
         key = (e["pattern"], e["grade"])
@@ -204,15 +258,16 @@ def _build_session_index(entries):
     return idx
 
 
-def _session_day_allowed(idx, loc, grade, date):
+def _session_day_allowed(idx, loc, grade, date, section=""):
     """True/False if a grade-specific schedule applies; None if this class is unrestricted."""
     grade = (grade or "").strip()
     if not grade or not date:
         return None
-    loc_l = (loc or "").lower()
     dates = None
-    for (pattern, g), pattern_dates in idx.items():
-        if g != grade or pattern.lower() not in loc_l:
+    for (pattern, spec), pattern_dates in idx.items():
+        if not _loc_matches_session_pattern(loc, pattern):
+            continue
+        if not _class_matches_session_grade(grade, section, spec):
             continue
         dates = pattern_dates if dates is None else (dates | pattern_dates)
     if dates is None:
@@ -468,14 +523,17 @@ def build_payload(region=None, year=None):
             loc = x.get("Location1", "")
             grade = x.get("Grade1", "")
             dt = _parse_attendance_date(x.get("DateofClass1"))
-            allowed = _session_day_allowed(session_idx, loc, grade, dt)
+            section = (x.get("Section1") or "").strip()
+            allowed = _session_day_allowed(
+                session_idx, loc, grade, dt, section=section
+            )
             if allowed is False:
                 continue
             out.append({
                 "loc": loc,
                 "cat": x.get("GradeCategory1", ""),
                 "grade": grade,
-                "section": x.get("Section1", ""),
+                "section": section,
                 "date": dt,
                 "P": _num(x.get("P")), "A": _num(x.get("A")),
                 "T": _num(x.get("T")), "E": _num(x.get("E")),
@@ -503,7 +561,10 @@ def build_payload(region=None, year=None):
                 x.get("DateofClass1") or x.get("DateofClass") or x.get("Date")
             )
             grade = (x.get("Grade") or x.get("Grade1") or "").strip()
-            allowed = _session_day_allowed(session_idx, loc, grade, dt)
+            section = (x.get("Section") or x.get("Section1") or "").strip()
+            allowed = _session_day_allowed(
+                session_idx, loc, grade, dt, section=section
+            )
             if allowed is False:
                 continue
             parsed.append({
@@ -511,7 +572,7 @@ def build_payload(region=None, year=None):
                 "name": _person_name(x),
                 "loc": loc,
                 "grade": grade,
-                "section": (x.get("Section") or x.get("Section1") or "").strip(),
+                "section": section,
                 "date": dt,
                 "mark": mark,
             })
